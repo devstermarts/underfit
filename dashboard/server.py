@@ -4556,6 +4556,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         half = body.get("half", True)
         default_prompt = body.get("default_prompt", "").strip()
         exclude_list = body.get("exclude", [])
+        # Optional: split audio longer than this many seconds into equal chunks.
+        # None / 0 / missing → no split.
+        split_max_duration = body.get("split_max_duration")
+        try:
+            split_max_duration = float(split_max_duration) if split_max_duration else None
+        except (TypeError, ValueError):
+            split_max_duration = None
         if not name or not input_dir:
             self._json_response({"error": "name and input_dir required"}, status=400)
             return
@@ -4615,6 +4622,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             exclude_file.write_text("\n".join(sorted(exclude_set)) + "\n")
             exclude_flag = f" --exclude-file {shlex.quote(str(exclude_file))}"
 
+        split_flag = f" --split-max-duration {split_max_duration:g}" if split_max_duration else ""
+
         _q = shlex.quote
         cmd = (
             f"source {VENV_ACTIVATE} && "
@@ -4624,7 +4633,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             f"--model {_q(model)} "
             f"--output-dir {_q(str(output_dir))} "
             f"--num-gpus {len(gpus)}"
-            f"{half_flag}{exclude_flag} "
+            f"{half_flag}{exclude_flag}{split_flag} "
             f"2>&1 | tee {_q(str(log_path))}"
         )
         try:

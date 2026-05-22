@@ -1471,6 +1471,27 @@
         <label class="modal-label" id="ds-default-prompt-label">Default prompt (for files without tags)</label>
         <input type="text" class="resume-input" id="ds-default-prompt" placeholder="Genre: ..." value="">
       </div>
+      <div style="display:flex;align-items:center;gap:10px;margin-top:8px">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:0.9em">
+          <input type="checkbox" id="ds-split-enable" style="margin:0">
+          Split audio longer than
+        </label>
+        <select class="modal-select" id="ds-split-threshold" style="padding:4px 8px;width:auto">
+          <option value="20">20s</option>
+          <option value="30">30s</option>
+          <option value="60">60s</option>
+          <option value="90">90s</option>
+          <option value="120">2m</option>
+          <option value="180">3m</option>
+          <option value="240">4m</option>
+          <option value="300">5m</option>
+          <option value="360" selected>6m</option>
+          <option value="420">7m</option>
+          <option value="600">10m</option>
+          <option value="900">15m</option>
+        </select>
+        <span style="color:var(--text2);font-size:0.78em">into equal chunks ≤ threshold</span>
+      </div>
       <div class="resume-error" id="ds-encode-error"></div>
       <div class="modal-actions" style="margin-top:12px">
         <button class="modal-cancel" onclick="dsBackToStep1()">Back</button>
@@ -6943,11 +6964,16 @@ window.launchEncoding = async function() {
   loadingEl.style.display = 'flex';
   document.getElementById('ds-modal').onclick = null; // prevent close during load
   try {
+    const splitEnabled = document.getElementById('ds-split-enable').checked;
+    const splitVal = splitEnabled
+      ? parseInt(document.getElementById('ds-split-threshold').value, 10)
+      : null;
     const res = await fetch('/api/datasets/encode', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({name, input_dir: _dsScanResult.path, model, gpus, half: true,
         default_prompt: (document.getElementById('ds-default-prompt').value || '').trim(),
+        split_max_duration: splitVal,
         exclude: _dsScanResult.audio_files
           .filter((f, i) => !_dsFileIncluded[i])
           .map(f => f.relpath)
