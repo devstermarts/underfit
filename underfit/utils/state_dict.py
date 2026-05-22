@@ -27,6 +27,59 @@ def load_ckpt_state_dict(ckpt_path):
     return torch.load(ckpt_path, map_location="cpu", weights_only=True)["state_dict"]
 
 
+def stream_checkpoint_into_model(model, ckpt_path, *, device, dtype=None,
+                                  remap_keys=True):
+    """Load a safetensors checkpoint tensor-by-tensor into `model`, copying
+    each to `device` and dropping the CPU side immediately. Avoids holding
+    the full state_dict in CPU RAM.
+
+    `remap_keys=True` applies SA3's drop-one-part heuristic: when a source
+    key doesn't match any model key, try dropping each path component to see
+    if a shorter key matches (e.g. `pretransform.model.encoder.foo` ->
+    `pretransform.encoder.foo`).
+
+    Returns `(matched, skipped)`. Returns `None` for non-safetensors paths
+    (caller should fall back to a bulk load).
+    """
+    from pathlib import Path as _Path
+    if _Path(ckpt_path).suffix.lower() != ".safetensors":
+        return None
+    from safetensors import safe_open
+    from accelerate.utils import set_module_tensor_to_device
+
+    model_state_keys = set(model.state_dict().keys())
+    matched = skipped = 0
+    with safe_open(ckpt_path, framework="pt", device="cpu") as f:
+        for src_key in f.keys():
+            tgt_key = src_key
+            if tgt_key not in model_state_keys:
+                if not remap_keys:
+                    skipped += 1
+                    continue
+                parts = src_key.split(".")
+                tgt_key = None
+                for i in range(1, len(parts)):
+                    candidate = ".".join(parts[:i]) + "." + ".".join(parts[i + 1:])
+                    if candidate in model_state_keys:
+                        tgt_key = candidate
+                        break
+                if tgt_key is None:
+                    skipped += 1
+                    continue
+
+            tensor = f.get_tensor(src_key)
+            cast = dtype if (dtype is not None and tensor.is_floating_point()) else None
+            try:
+                set_module_tensor_to_device(model, tgt_key, device,
+                                            value=tensor, dtype=cast)
+                matched += 1
+            except Exception as e:
+                print(f"  warn: couldn't set {tgt_key!r}: {e}", flush=True)
+                skipped += 1
+            del tensor
+    return (matched, skipped)
+
+
 def remove_weight_norm_from_model(model):
     for module in model.modules():
         if hasattr(module, "weight"):

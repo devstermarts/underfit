@@ -2,6 +2,7 @@ from .state_dict import (
     copy_state_dict,
     load_ckpt_state_dict,
     remove_weight_norm_from_model,
+    stream_checkpoint_into_model,
     unwrap_state_dict,
     WRAPPER_PREFIXES,
 )

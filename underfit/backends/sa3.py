@@ -111,24 +111,35 @@ def load_model(config_path, ckpt_path, device="cuda", half=False):
     """Load model + parsed config from disk paths.
 
     Composes SA3's public primitives directly (rather than using
-    StableAudioModel.from_pretrained, which is registry-only) so we can:
-      1. accept arbitrary checkpoint paths,
-      2. apply remap_state_dict_keys to handle SAT-dev's pretransform.model.*
-         path nesting.
-    """
+    StableAudioModel.from_pretrained, which is registry-only) so we can
+    accept arbitrary checkpoint paths.
+
+    For safetensors checkpoints, weights are streamed tensor-by-tensor into
+    the model (peak CPU RAM ~one tensor instead of the full state_dict) —
+    important on memory-constrained hosts like Colab T4 (13 GB RAM)."""
     _require_sa3()
     from stable_audio_3.factory import create_diffusion_cond_from_config
     from stable_audio_3.loading_utils import remap_state_dict_keys
+    from underfit.utils import stream_checkpoint_into_model
     with open(config_path) as f:
         model_config = json.load(f)
     _normalize_for_sa3(model_config)
     if not torch.cuda.is_available():
         half = False
     model = create_diffusion_cond_from_config(model_config)
-    state_dict = _load_ckpt_state_dict(ckpt_path)
-    state_dict = unwrap_state_dict(state_dict, model_config.get("model_type"))
-    state_dict = remap_state_dict_keys(state_dict, model.state_dict())
-    copy_state_dict(model, state_dict)
+
+    # Stream safetensors weights directly to GPU; fall back to bulk-load
+    # for .ckpt / .pt format (no mmap available there).
+    target_device = device if torch.cuda.is_available() else "cpu"
+    target_dtype = torch.float16 if half else None
+    result = stream_checkpoint_into_model(
+        model, ckpt_path, device=target_device, dtype=target_dtype,
+    )
+    if result is None:
+        state_dict = _load_ckpt_state_dict(ckpt_path)
+        state_dict = unwrap_state_dict(state_dict, model_config.get("model_type"))
+        state_dict = remap_state_dict_keys(state_dict, model.state_dict())
+        copy_state_dict(model, state_dict)
     model.to(device).eval().requires_grad_(False)
     if half:
         model.to(torch.float16)

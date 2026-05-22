@@ -35,12 +35,22 @@ def load_model(config_path, ckpt_path, device="cuda", half=False):
 
     Returns (model, model_config). Model is moved to device, set to eval, with
     requires_grad disabled — caller must re-enable grads for training params.
-    """
+
+    Safetensors weights are streamed tensor-by-tensor into the model (peak
+    CPU RAM ~one tensor instead of the full state_dict). Falls back to a
+    bulk load for .ckpt / .pt format."""
+    from underfit.utils import stream_checkpoint_into_model
     with open(config_path) as f:
         model_config = json.load(f)
     model = create_model(model_config)
-    state_dict = load_ckpt_state_dict(ckpt_path)
-    load_state_into(model, state_dict, model_type=model_config.get("model_type"))
+    target_device = device if torch.cuda.is_available() else "cpu"
+    target_dtype = torch.float16 if half else None
+    result = stream_checkpoint_into_model(
+        model, ckpt_path, device=target_device, dtype=target_dtype,
+    )
+    if result is None:
+        state_dict = load_ckpt_state_dict(ckpt_path)
+        load_state_into(model, state_dict, model_type=model_config.get("model_type"))
     model.to(device).eval().requires_grad_(False)
     if half:
         model.to(torch.float16)
