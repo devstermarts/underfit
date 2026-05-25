@@ -2908,13 +2908,29 @@ def _process_run_demos(run):
 
 def process_all_demos():
     """Iterate over all registered runs, split demos into per-run dirs."""
-    # Generate spectrograms for ground truth clips (top-level and per-run subdirs)
+    # Generate spectrograms for ground-truth clips. Each subdir under
+    # audio/ground_truth/ is keyed by either a dataset name/id or a run id;
+    # we skip subdirs that don't correspond to any current dataset or run,
+    # so the spectrogram pool doesn't keep retrying orphan mp3s from
+    # deleted entities (and spamming the log on every cycle).
     gt_dir = AUDIO_DIR / "ground_truth"
     if gt_dir.exists():
-        for mp3 in gt_dir.rglob("*.mp3"):
-            jpg = mp3.with_suffix(".jpg")
-            if not jpg.exists():
-                generate_spectrogram(mp3, jpg)
+        known_keys = {r["id"] for r in registry.list_runs()}
+        for ds in datasets_registry.list_datasets():
+            if ds.get("id"):   known_keys.add(ds["id"])
+            if ds.get("name"): known_keys.add(ds["name"])
+        for child in gt_dir.iterdir():
+            if child.is_file() and child.suffix == ".mp3":
+                # Top-level GT mp3 (no subdir) — always process.
+                jpg = child.with_suffix(".jpg")
+                if not jpg.exists():
+                    generate_spectrogram(child, jpg)
+            elif child.is_dir() and child.name in known_keys:
+                for mp3 in child.glob("*.mp3"):
+                    jpg = mp3.with_suffix(".jpg")
+                    if not jpg.exists():
+                        generate_spectrogram(mp3, jpg)
+            # else: orphan subdir from a deleted run/dataset — skip silently.
 
     for run in registry.list_runs():
         _process_run_demos(run)
