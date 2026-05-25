@@ -158,8 +158,17 @@ def _load_models_from_json():
         # Build MODEL_INFO entry (matches the shape used by hardcoded entries).
         # Template path follows convention: training_template.json next to registry.json.
         paths = m["paths"]
+        # Normalize backends: accept either the new 'backends': ['sa3', 'sat_dev']
+        # list OR the legacy 'backend': 'sa3' scalar. Both materialize to a list
+        # in MODEL_INFO so downstream code only has to handle one shape.
+        if "backends" in m:
+            backends = list(m["backends"])
+        elif "backend" in m:
+            backends = [m["backend"]]
+        else:
+            backends = []
         entry = {
-            "backend":             m["backend"],
+            "backends":            backends,
             "base_config":         paths["base_config"],
             "base_ckpt":           paths["base_ckpt"],
             "template":            str(registry_path.parent / "training_template.json"),
@@ -215,7 +224,7 @@ def _load_models_from_json():
             "key":                  key,
             "label":                m.get("label", key),
             "description":          m.get("description", ""),
-            "backend":              m["backend"],
+            "backends":             backends,
             "diffusion_objective":  m["diffusion_objective"],
             "arc_type":             m.get("arc", {}).get("type"),
             "encoder_id":           enc_id,
@@ -256,15 +265,23 @@ def estimate_training_vram_mb(base_model="sa3", batch_size=8, lora_rank=16, prec
 def _backend_env_for_model(model_key):
     """Return an env-var fragment to set UNDERFIT_BACKEND for a given base model.
 
-    Each MODEL_INFO entry can declare a `backend` field ("sa3" or "sat_dev").
-    Child training/gradio processes read UNDERFIT_BACKEND to pick the matching
-    backend module — so we set it explicitly per model rather than relying on
-    the dashboard-wide default. Returns "" if the model doesn't specify one
-    (falls back to whatever the parent env / autodetect resolve to).
+    Each MODEL_INFO entry declares a list of supported backends (e.g. SA3
+    models support both 'sa3' and 'sat_dev' since the codepath is compatible).
+    Pick the first one whose Python package is importable in the venv — that
+    way 'pip install -e <sa3>' alone is enough to run an SA3 model even when
+    the registry also lists sat_dev as compatible. Returns "" if none of the
+    declared backends are importable (falls back to autodetect downstream).
     """
+    import importlib.util
     info = MODEL_INFO.get(model_key) or {}
-    backend = (info.get("backend") or "").strip()
-    return f"UNDERFIT_BACKEND={backend} " if backend else ""
+    backends = info.get("backends") or []
+    # Skip backends whose Python package isn't installed.
+    mod_for = {"sa3": "stable_audio_3", "sat_dev": "stable_audio_tools"}
+    for b in backends:
+        modname = mod_for.get(b)
+        if modname and importlib.util.find_spec(modname) is not None:
+            return f"UNDERFIT_BACKEND={b} "
+    return ""
 
 
 # Gradio launch constants. VENV_ACTIVATE is autodetected from the running
