@@ -322,18 +322,20 @@ def _editable_install(path: Path, extras: tuple[str, ...] = ()) -> int:
         return rc
 
     # ── Backend-pin overrides ──────────────────────────────────────────
-    # sat's [train] extra pins pandas==2.0.2 (compiled against numpy 1.x).
-    # We pin numpy>=2.2 in our own pyproject, which leaves the venv in a
-    # broken state where any path through torchmetrics → transformers →
-    # sklearn → pandas crashes with:
+    # sat's [train] extra and its transitive deps include several
+    # numpy-1.x-era packages (pandas==2.0.2, PyWavelets 1.4.x). We pin
+    # numpy>=2.2 in our own pyproject, which leaves the venv in a broken
+    # state where any import path through those C-extension packages
+    # crashes with:
     #     numpy.dtype size changed, may indicate binary incompatibility.
-    # Force-upgrade pandas to a numpy-2.x-compatible release after sat's
-    # editable install settles. (sa3 doesn't pull pandas in, so this is a
-    # no-op there.)
+    # Force-upgrade the known offenders to numpy-2.x-compatible releases
+    # after sat's editable install settles. (sa3 doesn't pull these in,
+    # so this is a no-op there.)
     if "train" in extras:
-        print(f"\n→ overriding pandas pin to a numpy-2.x-compatible release ...\n",
+        print(f"\n→ overriding numpy-1.x-era pins (pandas, PyWavelets) ...\n",
               flush=True)
-        subprocess.run([*_install_command(), "--upgrade", "pandas>=2.2.3"])
+        subprocess.run([*_install_command(), "--upgrade",
+                        "pandas>=2.2.3", "PyWavelets>=1.6"])
     return rc
 
 
