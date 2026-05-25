@@ -1297,9 +1297,13 @@ class GradioManager:
                 "NUMEXPR_NUM_THREADS=4 RAYON_NUM_THREADS=4 TOKENIZERS_PARALLELISM=false "
             ) if GRADIO_THREAD_CAP else ""
             backend_env = _backend_env_for_model(base_model)
+            # MPLBACKEND=Agg overrides Colab's inherited
+            # 'module://matplotlib_inline.backend_inline' which is invalid in
+            # a non-IPython subprocess (matplotlib crashes on import).
             cmd = (
                 f"source {VENV_ACTIVATE} && "
-                f"{backend_env}CUDA_VISIBLE_DEVICES={gpu} GRADIO_SERVER_PORT={port} PYTHONUNBUFFERED=1 "
+                f"{backend_env}CUDA_VISIBLE_DEVICES={gpu} GRADIO_SERVER_PORT={port} "
+                f"PYTHONUNBUFFERED=1 MPLBACKEND=Agg "
                 f"{thread_env}"
                 f"python3 {RUN_GRADIO_SCRIPT} "
                 f"--model-config {config_path_model} "
@@ -2011,7 +2015,7 @@ class TrainingMonitor:
                         bash_err_f = open(bash_err_path, "wb")
                     except OSError:
                         bash_err_f = subprocess.DEVNULL
-                    launch_cmd = f"source {VENV_ACTIVATE} && cd {shlex.quote(demo_dir)} && PYTHONUNBUFFERED=1 {log_env}{backend_env}{gpu_env}{restart_cmd} 2>&1 | tee -a {shlex.quote(log_path)}"
+                    launch_cmd = f"source {VENV_ACTIVATE} && cd {shlex.quote(demo_dir)} && PYTHONUNBUFFERED=1 MPLBACKEND=Agg {log_env}{backend_env}{gpu_env}{restart_cmd} 2>&1 | tee -a {shlex.quote(log_path)}"
                     proc = subprocess.Popen(
                         ["bash", "-c", launch_cmd],
                         stdout=subprocess.DEVNULL,
@@ -3816,7 +3820,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # any unhandled exception — robust to pipe/buffering issues that can
         # cause the normal tee'd log to come out empty.
         log_env = f"UNDERFIT_LOG_PATH={_q(log_path)} "
-        launch_cmd = f"source {VENV_ACTIVATE} && cd {_q(demo_dir)} && PYTHONUNBUFFERED=1 {log_env}{backend_env}{thread_env}{gpu_env}{restart_cmd} 2>&1 | tee {_q(log_path)}"
+        # MPLBACKEND=Agg overrides Colab's inherited
+        # 'module://matplotlib_inline.backend_inline' (matplotlib crashes on
+        # import in a non-IPython subprocess otherwise).
+        launch_cmd = f"source {VENV_ACTIVATE} && cd {_q(demo_dir)} && PYTHONUNBUFFERED=1 MPLBACKEND=Agg {log_env}{backend_env}{thread_env}{gpu_env}{restart_cmd} 2>&1 | tee {_q(log_path)}"
         # Capture bash's own stderr (shell errors, source failures, etc.) — used by
         # the run-monitor's diagnose helper to surface a hint when a run dies fast
         # with an empty log.
@@ -4147,7 +4154,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             bash_err_f = open(bash_err_path, "wb")
         except OSError:
             bash_err_f = subprocess.DEVNULL
-        launch_cmd = f"source {VENV_ACTIVATE} && cd {shlex.quote(demo_dir)} && PYTHONUNBUFFERED=1 {log_env}{backend_env}{gpu_env}{new_cmd} 2>&1 | tee {shlex.quote(str(new_log))}"
+        launch_cmd = f"source {VENV_ACTIVATE} && cd {shlex.quote(demo_dir)} && PYTHONUNBUFFERED=1 MPLBACKEND=Agg {log_env}{backend_env}{gpu_env}{new_cmd} 2>&1 | tee {shlex.quote(str(new_log))}"
         try:
             proc = subprocess.Popen(
                 ["bash", "-c", launch_cmd],
@@ -5126,7 +5133,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         _q = shlex.quote
         cmd = (
             f"source {VENV_ACTIVATE} && "
-            f"CUDA_VISIBLE_DEVICES={gpu_str} PYTHONUNBUFFERED=1 "
+            f"CUDA_VISIBLE_DEVICES={gpu_str} PYTHONUNBUFFERED=1 MPLBACKEND=Agg "
             f"python3 {PRE_DIR / 'pre_encode.py'} "
             f"--input-dir {_q(str(input_path))} "
             f"--model {_q(model)} "
