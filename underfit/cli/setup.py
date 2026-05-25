@@ -317,7 +317,24 @@ def _editable_install(path: Path, extras: tuple[str, ...] = ()) -> int:
     target = f"{path}[{','.join(extras)}]" if extras else str(path)
     cmd = [*_install_command(), "-e", target]
     print(f"\n→ {' '.join(cmd)}\n", flush=True)
-    return subprocess.run(cmd).returncode
+    rc = subprocess.run(cmd).returncode
+    if rc != 0:
+        return rc
+
+    # ── Backend-pin overrides ──────────────────────────────────────────
+    # sat's [train] extra pins pandas==2.0.2 (compiled against numpy 1.x).
+    # We pin numpy>=2.2 in our own pyproject, which leaves the venv in a
+    # broken state where any path through torchmetrics → transformers →
+    # sklearn → pandas crashes with:
+    #     numpy.dtype size changed, may indicate binary incompatibility.
+    # Force-upgrade pandas to a numpy-2.x-compatible release after sat's
+    # editable install settles. (sa3 doesn't pull pandas in, so this is a
+    # no-op there.)
+    if "train" in extras:
+        print(f"\n→ overriding pandas pin to a numpy-2.x-compatible release ...\n",
+              flush=True)
+        subprocess.run([*_install_command(), "--upgrade", "pandas>=2.2.3"])
+    return rc
 
 
 def _verify_backend_import(backend: Backend) -> bool:
