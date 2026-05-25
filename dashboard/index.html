@@ -5304,25 +5304,44 @@ function _hideSeedUploadModal() {
 // Show a dialog inside the seed modal — title, HTML body, and N buttons.
 // Each button: {label, primary?, onClick}. The modal hides automatically
 // when any button is clicked; onClick is invoked after hide.
+//
+// Layout: Cancel / Close go in their own row below. Everything else lives
+// in the row above (purple by default; primary stays green).
 function _showSeedDialog(title, bodyHtml, buttons) {
   const inner = document.getElementById('seed-modal-inner');
   inner.innerHTML = `
     <div style="font-size:1.05em;font-weight:600;margin-bottom:10px">${title}</div>
     <div style="margin-bottom:14px;font-size:0.88em;line-height:1.45;color:var(--text1);text-align:left">${bodyHtml}</div>
-    <div id="seed-dialog-buttons" style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap"></div>
+    <div id="seed-dialog-choices" style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-bottom:10px"></div>
+    <div id="seed-dialog-cancel"  style="display:flex;justify-content:center"></div>
   `;
-  const row = inner.querySelector('#seed-dialog-buttons');
+  const choices = inner.querySelector('#seed-dialog-choices');
+  const cancelRow = inner.querySelector('#seed-dialog-cancel');
   buttons.forEach((b) => {
     const el = document.createElement('button');
-    el.className = b.primary ? 'modal-launch' : 'modal-cancel';
-    el.style.cssText = 'padding:6px 18px;font-size:0.88em';
+    const lbl = (b.label || '').trim().toLowerCase();
+    const isCancel = (lbl === 'cancel' || lbl === 'close');
+    if (isCancel) {
+      el.className = 'modal-cancel';
+      el.style.cssText = 'padding:6px 18px;font-size:0.88em';
+    } else if (b.primary) {
+      el.className = 'modal-launch';
+      el.style.cssText = 'padding:6px 18px;font-size:0.88em';
+    } else {
+      // Choice button — purple (matches the dashboard's --accent2 family)
+      el.className = 'modal-launch';
+      el.style.cssText = 'padding:6px 18px;font-size:0.88em;'
+        + 'background:var(--accent2);border-color:var(--accent2);color:#fff';
+    }
     el.textContent = b.label;
     el.onclick = () => {
       _hideSeedUploadModal();
       if (typeof b.onClick === 'function') b.onClick();
     };
-    row.appendChild(el);
+    (isCancel ? cancelRow : choices).appendChild(el);
   });
+  // Hide the upper row if it has no buttons (e.g. single-Close error dialog).
+  if (!choices.children.length) choices.style.display = 'none';
   document.getElementById('seed-upload-modal').style.display = 'flex';
 }
 
