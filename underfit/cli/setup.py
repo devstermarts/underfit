@@ -59,15 +59,6 @@ class Backend:
 
 BACKENDS: list[Backend] = [
     Backend(
-        key="sat",
-        label="stable-audio-tools",
-        module="stable_audio_tools",
-        clone_url="https://github.com/Stability-AI/stable-audio-tools.git",
-        sibling_dirname="stable-audio-tools",
-        description="Stability-AI/stable-audio-tools",
-        extras=("train", "ui"),  # train: PL/prefigure/etc; ui: gradio for run_gradio.py
-    ),
-    Backend(
         key="sa3",
         label="stable-audio-3",
         module="stable_audio_3",
@@ -77,6 +68,9 @@ BACKENDS: list[Backend] = [
         extras=("lora", "ui"),  # lora: dill/PL for dataloader; ui: gradio for run_gradio.py
     ),
 ]
+# Note: the sat (stable-audio-tools) backend module is still present at
+# underfit/backends/sat.py for revival, but the wizard no longer offers
+# it — installs always pick sa3.
 
 
 # ── SA3 MODEL PACKS ──────────────────────────────────────────────────────────
@@ -150,26 +144,12 @@ def pack_dir(key: str) -> Path:
 # ── BACKEND HELPERS ──────────────────────────────────────────────────────────
 
 
-def _by_key(key: str) -> Backend:
-    for b in BACKENDS:
-        if b.key == key:
-            return b
-    raise KeyError(key)
-
-
 def backend_installed(backend: Backend) -> bool:
     return importlib.util.find_spec(backend.module) is not None
 
 
 def installed_backend_keys() -> list[str]:
     return [b.key for b in BACKENDS if backend_installed(b)]
-
-
-def choose_default_backend(installed: list[str]) -> str:
-    for b in BACKENDS:
-        if b.key in installed:
-            return b.key
-    return BACKENDS[0].key
 
 
 def _arrow_select(title: str, lines_per_option: list[list[str]], default_idx: int) -> int:
@@ -247,16 +227,6 @@ def _arrow_select(title: str, lines_per_option: list[list[str]], default_idx: in
                 sys.exit(1)
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, saved)
-
-
-def prompt_backend(default_key: str, installed: list[str]) -> str:
-    default_idx = next(i for i, b in enumerate(BACKENDS) if b.key == default_key)
-    lines = []
-    for b in BACKENDS:
-        tag = " [installed]" if b.key in installed else ""
-        lines.append([f"{b.label}{tag}", b.description])
-    idx = _arrow_select("Which Stable Audio backend should underfit use?", lines, default_idx)
-    return BACKENDS[idx].key
 
 
 def _install_command() -> list[str]:
@@ -364,24 +334,6 @@ def _clone_backend(backend: Backend, target: Path) -> bool:
         print(f"  ✗ git clone failed (exit {rc})")
         return False
     return True
-
-
-def _prompt_path(backend: Backend) -> Path | None:
-    """Prompt the user for a backend checkout path, validating each entry.
-    Returns the resolved Path on success, or None if the user gave up."""
-    while True:
-        try:
-            raw = input(f"\nPath to existing {backend.label} checkout (blank to cancel): ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            return None
-        if not raw:
-            return None
-        p = Path(raw).expanduser().resolve()
-        ok, reason = _is_valid_backend_checkout(backend, p)
-        if ok:
-            return p
-        print(f"  ✗ {reason}. Try again.")
 
 
 # ── HF AUTH ──────────────────────────────────────────────────────────────────
@@ -639,36 +591,18 @@ def _provision_backend(backend: Backend, args) -> bool:
         print(f"\n✗ {backend.label} is not installed and --no-install was passed.")
         return False
 
-    # Build the menu.
+    # No menu — wizard auto-picks. If a sibling checkout already exists, reuse
+    # it; otherwise clone fresh from GitHub. To override (e.g. install from a
+    # custom path), pass `--backend-path PATH`.
     sibling_dest = _underfit_root().parent / backend.sibling_dirname
-    options: list[tuple[str, str, str]] = []  # (action, head, sub)
     if sibling:
-        options.append(("use_sibling", f"Use existing sibling checkout", f"{sibling}"))
-    options.append(("clone", f"Clone fresh from GitHub", f"→ {sibling_dest}"))
-    options.append(("paste_path", "Paste a path to an existing checkout", "you'll be asked next"))
-
-    idx = _arrow_select(
-        f"How would you like to provide {backend.label}?",
-        [[head, sub] for (_, head, sub) in options],
-        default_idx=0,
-    )
-    action = options[idx][0]
-
-    # Resolve to a checkout path.
-    checkout_path: Path | None = None
-    if action == "use_sibling":
+        print(f"\n→ using existing sibling checkout: {sibling}")
         checkout_path = sibling
-    elif action == "clone":
+    else:
+        print(f"\n→ cloning {backend.label} into {sibling_dest}")
         if not _clone_backend(backend, sibling_dest):
             return False
         checkout_path = sibling_dest
-    elif action == "paste_path":
-        checkout_path = _prompt_path(backend)
-        if checkout_path is None:
-            print("\n✗ no path provided, aborting.")
-            return False
-
-    assert checkout_path is not None
 
     # Editable install + verify.
     rc = _editable_install(checkout_path, backend.extras)
@@ -683,16 +617,16 @@ def _provision_backend(backend: Backend, args) -> bool:
 
 
 def run_backend_phase(args) -> Backend | None:
-    """Returns the chosen Backend, or None if provisioning failed."""
-    installed = installed_backend_keys()
-    print(f"detected installed backends: {', '.join(installed) if installed else 'none'}")
+    """Returns the chosen Backend, or None if provisioning failed.
 
-    if args.backend:
-        chosen_key = args.backend
-        print(f"using --backend {chosen_key}")
-    else:
-        chosen_key = prompt_backend(choose_default_backend(installed), installed)
-    chosen = _by_key(chosen_key)
+    The wizard no longer prompts — there's only one supported backend (sa3)
+    and it's selected automatically. The `--backend` arg is still parsed so
+    existing CI / colab invocations don't break, but it must be 'sa3'.
+    """
+    chosen = BACKENDS[0]
+    installed = installed_backend_keys()
+    print(f"backend: {chosen.label} ({chosen.key}) — "
+          f"{'already installed' if chosen.key in installed else 'will be installed'}")
 
     if not _provision_backend(chosen, args):
         return None
@@ -700,13 +634,7 @@ def run_backend_phase(args) -> Backend | None:
 
 
 def run_model_phase(args, backend: Backend) -> int:
-    """Download SA3 model packs from HuggingFace.
-
-    Runs for both backends — the SA3 model registries declare
-    backends=['sa3', 'sat'], meaning each pack is usable from either
-    underfit backend. So the offer-to-download UX is identical regardless
-    of which backend the user picked in the prior phase.
-    """
+    """Download SA3 model packs from HuggingFace."""
     user = hf_whoami()
     if not user:
         print_hf_login_help()
@@ -784,18 +712,20 @@ def run_model_phase(args, backend: Backend) -> int:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="underfit-setup",
-        description="Pick a Stable Audio backend and download SA3 model packs for underfit.",
+        description="Install the stable-audio-3 backend and download SA3 model packs for underfit.",
     )
+    # `--backend` accepted for back-compat with old colab invocations; only
+    # value is 'sa3'. The wizard no longer prompts.
     p.add_argument(
         "--backend",
         choices=[b.key for b in BACKENDS],
-        help="Skip the interactive backend prompt and select this backend.",
+        help=argparse.SUPPRESS,
     )
     p.add_argument(
         "--backend-path",
         metavar="PATH",
         default=None,
-        help=("Path to a local backend source tree (skips the discover/clone/paste menu). "
+        help=("Path to a local stable-audio-3 source tree (skips the auto clone-or-reuse step). "
               "Must contain pyproject.toml + the backend's package directory. "
               "Useful for Colab and other headless setups."),
     )
