@@ -44,7 +44,11 @@ PRE_DIR = BASE_DIR / "dataset_processing"       # autotagger, pre_encode, metada
 
 # Per-instance runtime paths (under STATE_DIR)
 RUNS_DIR = STATE_DIR / "runs"                   # per-run checkpoints, configs, demos — durable, on Drive in Colab
-SEED_LORAS_DIR = STATE_DIR / "seed_loras"       # user-uploaded LoRA seed checkpoints (validated, content-addressed)
+# Seed LoRA uploads land here briefly before _handle_new_finetune copies them
+# into the run dir. Temporary staging — no need for Drive (slow writes mean
+# the upload spinner just hangs for 5-30 s per file). Override-able via env.
+SEED_LORAS_DIR = Path(os.environ.get("UNDERFIT_SEED_LORAS_DIR",
+                                      str(STATE_DIR / "seed_loras"))).expanduser()
 # Live training logs live on local SSD on Colab (fast reads for the dashboard)
 # and get rsync'd to Drive every ~60s by a separate thread in the notebook.
 # Outside Colab, defaults to RUNS_DIR so single-machine setups behave as before.

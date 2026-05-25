@@ -5299,20 +5299,41 @@ window.handleSeedLoraFile = async function(ev) {
     return;
   }
   const status = document.getElementById('new-ft-seed-status');
-  status.textContent = `uploading ${file.name} (${(file.size/1e6).toFixed(1)} MB)…`;
+  const sizeMb = (file.size / 1e6).toFixed(1);
   const baseModel = document.getElementById('new-ft-base-model').value || 'sa3-medium';
   const url = `/api/lora/validate_seed?filename=${encodeURIComponent(file.name)}&base_model=${encodeURIComponent(baseModel)}`;
-  let resp, data;
+  // Use XMLHttpRequest so we can show upload progress (fetch can't, for upload bodies)
+  let data;
   try {
-    resp = await fetch(url, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/octet-stream'},
-      body: file,
+    data = await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', url);
+      xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          const pct = (100 * e.loaded / e.total).toFixed(0);
+          status.textContent = `uploading ${file.name} — ${pct}% of ${sizeMb} MB`;
+        } else {
+          status.textContent = `uploading ${file.name} (${sizeMb} MB)…`;
+        }
+      };
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try { resolve(JSON.parse(xhr.responseText)); }
+          catch (e) { reject(new Error('invalid JSON response: ' + xhr.responseText.slice(0, 200))); }
+        } else {
+          reject(new Error('HTTP ' + xhr.status + ': ' + xhr.responseText.slice(0, 200)));
+        }
+      };
+      xhr.onerror = () => reject(new Error('network error'));
+      xhr.upload.onerror = () => reject(new Error('upload error'));
+      status.textContent = `uploading ${file.name} (${sizeMb} MB)…`;
+      xhr.send(file);
     });
-    data = await resp.json();
+    status.textContent = 'validating…';
   } catch (e) {
     status.textContent = '';
-    alert('Upload failed: ' + e);
+    alert('Upload failed: ' + e.message);
     return;
   }
   if (!data.ok) {
