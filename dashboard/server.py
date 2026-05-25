@@ -1870,7 +1870,7 @@ class TrainingMonitor:
                     backend_env = _backend_env_for_model(fresh_run.get("base_model"))
                     demo_dir = fresh_run.get("demo_source_dir", str(RUNS_DIR))
                     os.makedirs(demo_dir, exist_ok=True)
-                    launch_cmd = f"source {VENV_ACTIVATE} && cd {shlex.quote(demo_dir)} && PYTHONUNBUFFERED=1 {backend_env}{gpu_env}{restart_cmd} 2>&1 | tee -a {shlex.quote(log_path)}"
+                    launch_cmd = f"source {VENV_ACTIVATE} && cd {shlex.quote(demo_dir)} && PYTHONUNBUFFERED=1 {backend_env}{gpu_env}{restart_cmd} 2>&1 | python3 -u -m underfit.utils.stderr_filter | tee -a {shlex.quote(log_path)}"
                     proc = subprocess.Popen(
                         ["bash", "-c", launch_cmd],
                         stdout=subprocess.DEVNULL,
@@ -3358,7 +3358,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             "NUMEXPR_NUM_THREADS=4 RAYON_NUM_THREADS=4 TOKENIZERS_PARALLELISM=false "
         ) if GRADIO_THREAD_CAP else ""
         backend_env = _backend_env_for_model(base_model)
-        launch_cmd = f"source {VENV_ACTIVATE} && cd {_q(demo_dir)} && PYTHONUNBUFFERED=1 {backend_env}{thread_env}{gpu_env}{restart_cmd} 2>&1 | tee {_q(log_path)}"
+        launch_cmd = f"source {VENV_ACTIVATE} && cd {_q(demo_dir)} && PYTHONUNBUFFERED=1 {backend_env}{thread_env}{gpu_env}{restart_cmd} 2>&1 | python3 -u -m underfit.utils.stderr_filter | tee {_q(log_path)}"
         try:
             proc = subprocess.Popen(
                 ["bash", "-c", launch_cmd],
@@ -3667,7 +3667,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         backend_env = _backend_env_for_model(run.get("base_model"))
         demo_dir = run.get("demo_source_dir", str(RUNS_DIR))
         os.makedirs(demo_dir, exist_ok=True)
-        launch_cmd = f"source {VENV_ACTIVATE} && cd {shlex.quote(demo_dir)} && PYTHONUNBUFFERED=1 {backend_env}{gpu_env}{new_cmd} 2>&1 | tee {shlex.quote(str(new_log))}"
+        launch_cmd = f"source {VENV_ACTIVATE} && cd {shlex.quote(demo_dir)} && PYTHONUNBUFFERED=1 {backend_env}{gpu_env}{new_cmd} 2>&1 | python3 -u -m underfit.utils.stderr_filter | tee {shlex.quote(str(new_log))}"
         try:
             proc = subprocess.Popen(
                 ["bash", "-c", launch_cmd],
@@ -4636,7 +4636,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             f"--output-dir {_q(str(output_dir))} "
             f"--num-gpus {len(gpus)}"
             f"{half_flag}{exclude_flag}{split_flag} "
-            f"2>&1 | tee {_q(str(log_path))}"
+            f"2>&1 | python3 -u -m underfit.utils.stderr_filter | tee {_q(str(log_path))}"
         )
         try:
             proc = subprocess.Popen(
