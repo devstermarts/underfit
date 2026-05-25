@@ -3693,11 +3693,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # UNDERFIT_LOG_PATH lets lora_train.py write a sidecar <log>.exit on
         # any unhandled exception — robust to pipe/buffering issues that can
         # cause the normal tee'd log to come out empty.
-        # PYTHONPATH points at the underfit checkout so `python -m
-        # underfit.utils.stderr_filter` in the pipeline can find the package
-        # — underfit's pyproject sets `package = false`, so it's NOT
-        # installed in the venv's site-packages, only resolvable as a
-        # script-directory import (lora_train.py works via that path).
         log_env = f"UNDERFIT_LOG_PATH={_q(log_path)} "
         launch_cmd = f"source {VENV_ACTIVATE} && cd {_q(demo_dir)} && PYTHONUNBUFFERED=1 {log_env}{backend_env}{thread_env}{gpu_env}{restart_cmd} 2>&1 | tee {_q(log_path)}"
         # Capture bash's own stderr (shell errors, source failures, etc.) — used by
