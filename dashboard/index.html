@@ -1273,6 +1273,21 @@
           </select>
         </div>
       </div>
+      <!-- LoRA source tabs: New (configure from scratch) vs Load .safetensors (seed from upload) -->
+      <div style="display:flex;gap:6px;align-items:center;margin:8px 0 4px 0">
+        <button type="button" class="modal-launch" id="new-ft-lora-tab-new"
+                onclick="setLoraSourceTab('new')"
+                style="padding:4px 14px;font-size:0.85em">New LoRA</button>
+        <button type="button" class="modal-cancel" id="new-ft-lora-tab-load"
+                onclick="setLoraSourceTab('load')"
+                style="padding:4px 14px;font-size:0.85em">Load .safetensors</button>
+        <span id="new-ft-seed-status" style="color:var(--text2);font-size:0.78em;margin-left:8px"></span>
+        <input type="file" id="new-ft-seed-file" accept=".safetensors" style="display:none"
+               onchange="handleSeedLoraFile(event)">
+        <input type="hidden" id="new-ft-seed-path">
+        <input type="hidden" id="new-ft-seed-filename">
+        <input type="hidden" id="new-ft-seed-step">
+      </div>
       <div class="new-ft-grid4" style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;margin-bottom:4px">
         <div>
           <label class="modal-label">LoRA type</label>
@@ -5219,6 +5234,117 @@ function estimateLoraParams(model, adapterType, rank) {
   }
 }
 
+// ── LoRA source: New vs Load .safetensors ───────────────────────────────
+// Two tabs above the LoRA params row. "New" = configure rank/alpha/etc
+// from scratch. "Load .safetensors" = upload a pre-trained adapter, validate
+// server-side, populate the fields with its baked-in config, then freeze them
+// so the user can't change values that wouldn't match the seed file.
+let _newFtLoraSource = 'new'; // 'new' | 'load'
+
+function _loraFreezableIds() {
+  return ['new-ft-lora-type', 'new-ft-rank', 'new-ft-alpha',
+          'new-ft-include', 'new-ft-exclude'];
+}
+
+function _setLoraFrozen(frozen) {
+  for (const id of _loraFreezableIds()) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    el.disabled = frozen;
+    el.style.opacity = frozen ? '0.6' : '';
+  }
+  const lf = document.getElementById('new-ft-layer-filter');
+  if (lf) lf.style.opacity = frozen ? '0.6' : '';
+}
+
+window.setLoraSourceTab = function(which) {
+  _newFtLoraSource = which;
+  const newBtn = document.getElementById('new-ft-lora-tab-new');
+  const loadBtn = document.getElementById('new-ft-lora-tab-load');
+  newBtn.className = which === 'new' ? 'modal-launch' : 'modal-cancel';
+  loadBtn.className = which === 'load' ? 'modal-launch' : 'modal-cancel';
+  if (which === 'load') {
+    // If no seed loaded yet, prompt to pick a file.
+    const status = document.getElementById('new-ft-seed-status');
+    if (!document.getElementById('new-ft-seed-path').value) {
+      document.getElementById('new-ft-seed-file').click();
+      status.textContent = 'choose a .safetensors file…';
+    }
+  } else {
+    // Switching back to New clears the seed and unfreezes.
+    _clearSeedLora();
+  }
+};
+
+function _clearSeedLora() {
+  document.getElementById('new-ft-seed-path').value = '';
+  document.getElementById('new-ft-seed-filename').value = '';
+  document.getElementById('new-ft-seed-step').value = '';
+  document.getElementById('new-ft-seed-status').textContent = '';
+  document.getElementById('new-ft-seed-file').value = '';
+  _setLoraFrozen(false);
+}
+
+window.handleSeedLoraFile = async function(ev) {
+  const file = ev.target.files && ev.target.files[0];
+  if (!file) return;
+  if (!file.name.toLowerCase().endsWith('.safetensors')) {
+    alert('Only .safetensors files are accepted.\n.ckpt / .pt files use pickle and are a security risk.');
+    return;
+  }
+  const status = document.getElementById('new-ft-seed-status');
+  status.textContent = `uploading ${file.name} (${(file.size/1e6).toFixed(1)} MB)…`;
+  const baseModel = document.getElementById('new-ft-base-model').value || 'sa3-medium';
+  const url = `/api/lora/validate_seed?filename=${encodeURIComponent(file.name)}&base_model=${encodeURIComponent(baseModel)}`;
+  let resp, data;
+  try {
+    resp = await fetch(url, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/octet-stream'},
+      body: file,
+    });
+    data = await resp.json();
+  } catch (e) {
+    status.textContent = '';
+    alert('Upload failed: ' + e);
+    return;
+  }
+  if (!data.ok) {
+    status.textContent = '';
+    // Build a detail dump for the user
+    const lines = ['Unable to validate .safetensors checkpoint.'];
+    if (data.error) lines.push('', 'Error: ' + data.error);
+    if (data.partial && Object.keys(data.partial).length) {
+      lines.push('', 'What we did manage to extract:');
+      for (const [k, v] of Object.entries(data.partial)) {
+        lines.push(`  ${k}: ${JSON.stringify(v)}`);
+      }
+    }
+    alert(lines.join('\n'));
+    // Stay in 'new' mode
+    setLoraSourceTab('new');
+    return;
+  }
+  // Success — populate fields and freeze.
+  document.getElementById('new-ft-seed-path').value = data.path;
+  document.getElementById('new-ft-seed-filename').value = data.filename;
+  document.getElementById('new-ft-seed-step').value = (data.config && data.config.step) || 0;
+  const cfg = data.config || {};
+  if (cfg.adapter_type) document.getElementById('new-ft-lora-type').value = cfg.adapter_type;
+  if (cfg.rank != null) document.getElementById('new-ft-rank').value = cfg.rank;
+  if (cfg.alpha != null) document.getElementById('new-ft-alpha').value = cfg.alpha;
+  if (Array.isArray(cfg.include)) document.getElementById('new-ft-include').value = cfg.include.join(',');
+  if (Array.isArray(cfg.exclude)) document.getElementById('new-ft-exclude').value = cfg.exclude.join(',');
+  _setLoraFrozen(true);
+  const stepHint = cfg.step ? ` · step ${cfg.step}` : '';
+  status.innerHTML = `<span style="color:var(--green)">✓ ${data.filename}</span>` +
+    `<span style="color:var(--text2)"> · ${cfg.adapter_type} rank ${cfg.rank}${stepHint}</span> ` +
+    `<a href="#" onclick="event.preventDefault();_clearSeedLora();setLoraSourceTab('new');return false;" ` +
+    `style="color:#9af;font-size:0.9em">clear</a>`;
+  validateNewFt();
+  updateCkptEstimate();
+};
+
 function updateCkptEstimate() {
   const el = document.getElementById('new-ft-ckpt-estimate');
   const model = document.getElementById('new-ft-base-model').value;
@@ -5552,6 +5678,13 @@ window.openNewFinetuneModal = async function() {
   document.getElementById('new-ft-ckpt-every').value = '1000';
   document.getElementById('new-ft-demo-every').value = '1000';
   document.getElementById('new-ft-next-btn').disabled = true;
+  // Reset LoRA source tab + clear any seed from a prior open
+  if (typeof _clearSeedLora === 'function') _clearSeedLora();
+  const _newTabBtn = document.getElementById('new-ft-lora-tab-new');
+  const _loadTabBtn = document.getElementById('new-ft-lora-tab-load');
+  if (_newTabBtn) _newTabBtn.className = 'modal-launch';
+  if (_loadTabBtn) _loadTabBtn.className = 'modal-cancel';
+  _newFtLoraSource = 'new';
   updateCkptEstimate();
   // Reset to Step 1
   document.getElementById('new-ft-step1').style.display = '';
@@ -5707,6 +5840,12 @@ window.confirmNewFinetune = async function() {
   const basePrecision = document.getElementById('new-ft-base-precision').value;
   if (basePrecision) payload.base_precision = basePrecision;
   if (datasetId) payload.dataset_id = datasetId;
+  // Seed LoRA (uploaded .safetensors) — server re-validates before launching
+  const seedPath = document.getElementById('new-ft-seed-path').value;
+  if (seedPath) {
+    payload.seed_lora_path = seedPath;
+    payload.seed_lora_filename = document.getElementById('new-ft-seed-filename').value;
+  }
   payload.random_crop = document.getElementById('new-ft-crop-mode').value === 'random';
   const cropLength = parseInt(document.getElementById('new-ft-crop-length').value);
   if (cropLength > 0) payload.latent_crop_length = cropLength;

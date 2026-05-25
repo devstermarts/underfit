@@ -44,6 +44,7 @@ PRE_DIR = BASE_DIR / "dataset_processing"       # autotagger, pre_encode, metada
 
 # Per-instance runtime paths (under STATE_DIR)
 RUNS_DIR = STATE_DIR / "runs"                   # per-run checkpoints, logs, generated dataset configs
+SEED_LORAS_DIR = STATE_DIR / "seed_loras"       # user-uploaded LoRA seed checkpoints (validated, content-addressed)
 AUDIO_DIR = STATE_DIR / "audio"                 # generated demo MP3s + spectrogram JPGs
 
 # Base-model files (SA3 RF + ARC, T5Gemma) — defaults to STATE_DIR/models,
@@ -3149,6 +3150,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             # Create run's demo output directory
             (AUDIO_DIR / "runs" / run_id).mkdir(parents=True, exist_ok=True)
             self._json_response(run, status=201)
+        elif parsed.path == "/api/lora/validate_seed":
+            self._handle_validate_seed_lora(parsed)
+            return
         elif parsed.path == "/api/gradio":
             length = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(length)) if length else {}
@@ -3231,6 +3235,94 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             else:
                 self.send_error(404)
 
+    def _handle_validate_seed_lora(self, parsed):
+        """Receive a raw .safetensors body, content-address-store it under
+        SEED_LORAS_DIR, validate, return extracted config OR error+partial info.
+
+        Frontend uploads as `application/octet-stream`; original filename comes
+        through as a `filename` query param. Body is read in chunks to avoid
+        loading the whole file into memory.
+        """
+        import hashlib
+        from urllib.parse import parse_qs
+        from underfit.utils.lora_validate import validate_lora_safetensors
+
+        qs = parse_qs(parsed.query)
+        orig_name = (qs.get("filename") or ["uploaded.safetensors"])[0]
+        if not orig_name.lower().endswith(".safetensors"):
+            self._json_response({
+                "ok": False,
+                "error": "only .safetensors files are accepted (no .ckpt / .pt — pickle is a security risk).",
+            }, status=400)
+            return
+        length = int(self.headers.get("Content-Length", 0))
+        if length <= 0:
+            self._json_response({"ok": False, "error": "empty upload"}, status=400)
+            return
+        MAX = 500 * 1024 * 1024  # 500 MB cap — generous; typical LoRA <100 MB
+        if length > MAX:
+            self._json_response({
+                "ok": False,
+                "error": f"upload too large ({length / 1e6:.1f} MB > {MAX / 1e6:.0f} MB cap)",
+            }, status=413)
+            return
+
+        SEED_LORAS_DIR.mkdir(parents=True, exist_ok=True)
+        # Stream into a temp file while hashing; rename to content-addressed final.
+        tmp = SEED_LORAS_DIR / f".upload-{os.getpid()}-{int(time.time()*1000)}.partial"
+        h = hashlib.sha256()
+        remaining = length
+        try:
+            with open(tmp, "wb") as f:
+                while remaining > 0:
+                    chunk = self.rfile.read(min(1 << 20, remaining))  # 1 MB blocks
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    h.update(chunk)
+                    remaining -= len(chunk)
+        except OSError as e:
+            tmp.unlink(missing_ok=True)
+            self._json_response({"ok": False, "error": f"upload write failed: {e}"}, status=500)
+            return
+
+        sha = h.hexdigest()[:16]
+        final = SEED_LORAS_DIR / f"{sha}.safetensors"
+        # Also keep the original name for display, side-by-side
+        meta_path = SEED_LORAS_DIR / f"{sha}.json"
+        try:
+            if final.exists():
+                tmp.unlink(missing_ok=True)
+            else:
+                tmp.rename(final)
+        except OSError as e:
+            tmp.unlink(missing_ok=True)
+            self._json_response({"ok": False, "error": f"could not finalize file: {e}"}, status=500)
+            return
+
+        result = validate_lora_safetensors(final)
+        # Always store the original filename next to the content-addressed file
+        try:
+            meta_path.write_text(json.dumps({"original_filename": orig_name, "sha": sha}, indent=2))
+        except OSError:
+            pass
+
+        # Response: success or failure both echo `partial` so frontend can show
+        # what we managed to extract even when validation failed.
+        response = {
+            "ok": result["ok"],
+            "path": str(final) if result["ok"] else None,
+            "filename": orig_name,
+            "config": result["config"],
+            "partial": result["partial"],
+            "error": result["error"],
+        }
+        # On failure, keep the file around for inspection but don't expose its
+        # path so callers can't bypass validation by referencing it directly.
+        if not result["ok"]:
+            response["path"] = None
+        self._json_response(response, status=200)
+
     def _handle_new_finetune(self, body):
         gpu = body.get("gpu")
         if gpu is None:
@@ -3258,6 +3350,39 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         alpha = body.get("alpha")
         lora_include = body.get("lora_include", "").strip()
         lora_exclude = body.get("lora_exclude", "").strip()
+
+        # Optional seed: user-uploaded .safetensors LoRA to start from. When
+        # set, it overrides the lora_type/rank/alpha/include/exclude knobs
+        # with the values baked into the seed's metadata, and we point the
+        # training loop at the file via lora_ckpt_path.
+        seed_lora_path = body.get("seed_lora_path") or None
+        seed_lora_step = 0
+        if seed_lora_path:
+            sp = Path(seed_lora_path)
+            if not sp.exists() or not sp.is_file():
+                self._json_response(
+                    {"error": f"seed_lora_path not found: {seed_lora_path}"},
+                    status=400,
+                )
+                return
+            # Re-validate server-side — never trust path coming back from client alone.
+            from underfit.utils.lora_validate import validate_lora_safetensors
+            seed_check = validate_lora_safetensors(sp)
+            if not seed_check["ok"]:
+                self._json_response(
+                    {"error": f"seed LoRA failed re-validation: {seed_check['error']}"},
+                    status=400,
+                )
+                return
+            sc = seed_check["config"]
+            lora_type = sc.get("adapter_type", lora_type)
+            rank = int(sc.get("rank", rank))
+            alpha = sc.get("alpha", alpha)
+            inc = sc.get("include")
+            exc = sc.get("exclude")
+            lora_include = ",".join(inc) if isinstance(inc, list) else (inc or lora_include)
+            lora_exclude = ",".join(exc) if isinstance(exc, list) else (exc or lora_exclude)
+            seed_lora_step = int(sc.get("step", 0) or 0)
         lr_raw = body.get("lr", "")
         base_precision = body.get("base_precision")  # null, "bf16", "fp16"
 
@@ -3319,6 +3444,25 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 cfg["training"]["lora_config"]["include"] = [s.strip() for s in lora_include.split(",") if s.strip()]
             if lora_exclude:
                 cfg["training"]["lora_config"]["exclude"] = [s.strip() for s in lora_exclude.split(",") if s.strip()]
+            # Seed: copy the uploaded .safetensors into the run dir + point training at it.
+            # We keep the seed file with the run so it survives even if the
+            # original upload gets garbage-collected from SEED_LORAS_DIR.
+            if seed_lora_path:
+                import shutil
+                run_seed_dir = Path(save_dir) / run_id
+                run_seed_dir.mkdir(parents=True, exist_ok=True)
+                run_seed_dst = run_seed_dir / "seed_lora.safetensors"
+                try:
+                    shutil.copy2(seed_lora_path, run_seed_dst)
+                except OSError as e:
+                    self._json_response(
+                        {"error": f"failed to copy seed LoRA into run dir: {e}"},
+                        status=500,
+                    )
+                    return
+                cfg["training"]["lora_ckpt_path"] = str(run_seed_dst)
+                if seed_lora_step > 0:
+                    cfg["training"]["step_offset"] = seed_lora_step
             if mi.get("svd_bases"):
                 cfg["svd_bases_path"] = mi["svd_bases"]
             if base_precision:
@@ -3542,6 +3686,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         }
         if run_demo_prompts:
             run["demo_prompts"] = run_demo_prompts
+        if seed_lora_path:
+            run["seed_lora"] = {
+                "filename": body.get("seed_lora_filename") or os.path.basename(seed_lora_path),
+                "step": seed_lora_step,
+                "adapter_type": lora_type,
+                "rank": rank,
+            }
         registry.add_run(run)
         (AUDIO_DIR / "runs" / run_id).mkdir(parents=True, exist_ok=True)
         print(f"[control] New finetune {run_id} on GPU {gpu}, PID {proc.pid}, max_steps {max_steps}")
