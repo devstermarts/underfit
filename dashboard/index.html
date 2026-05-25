@@ -1406,6 +1406,13 @@
     <!-- ============ STEP 4: Demos ============ -->
     <div id="new-ft-step4" style="display:none">
       <h3>New Finetune Demos</h3>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
+        <label class="modal-label" style="margin:0">Presets:</label>
+        <button class="modal-cancel" id="new-ft-preset-2" onclick="setDemoPreset(2)" style="padding:4px 14px;font-size:0.85em">Two</button>
+        <button class="modal-cancel" id="new-ft-preset-4" onclick="setDemoPreset(4)" style="padding:4px 14px;font-size:0.85em">Four</button>
+        <button class="modal-cancel" id="new-ft-preset-8" onclick="setDemoPreset(8)" style="padding:4px 14px;font-size:0.85em">Eight</button>
+        <span style="color:var(--text2);font-size:0.72em;margin-left:6px">Smaller presets pair well with a shorter Latent length (Step 3) on slow GPUs.</span>
+      </div>
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
         <label class="modal-label" style="margin:0">Demos every:</label>
         <span id="new-ft-demo-every-display" style="color:var(--text1);font-size:0.9em"></span>
@@ -4512,12 +4519,44 @@ let _newFtRareTokens = null;     // loaded on step2 entry, null = not loaded
 // ── New Finetune – Step 4: Demo entries ──────────────────────────────
 function _randomSeed() { return Math.floor(Math.random() * 91) + 10; } // 10-100
 
-function _defaultNewFtDemos() {
+// Preset = number of demo entries. Two/Four are quick previews for slow GPUs
+// (Turing/Volta — no flex_attention). Eight is the full default suite.
+//   Two:  1 RF (prompt) + 1 ARC (prompt)
+//   Four: 2 RF (prompt, unconditional) + 2 ARC (prompt, unconditional)
+//   Eight: 4 RF (2 cfg7-prompt + 2 cfg1-uncond) + 4 ARC (3 prompt + 1 steps=2)
+// All presets use standard CFG (7 RF, 1 ARC).
+let _newFtPreset = 8;
+let _newFtPresetUserSet = false; // true once the user clicks a Preset button
+
+function _defaultNewFtDemos(preset) {
   const model = document.getElementById('new-ft-base-model').value || 'sa3';
   const mi = _arcInfo[model] || {};
   const hasArc = mi.arc_type === 'full_model' || mi.arc_type === 'lora';
   const sampler = mi.diffusion_objective === 'v' ? 'V' : 'RF';
   const baseSteps = mi.diffusion_objective === 'v' ? 100 : 50;
+  if (preset === undefined || preset === null) preset = _newFtPreset;
+  if (preset === 2) {
+    const demos = [{prompt: '', sampler, cfg: 7, steps: baseSteps, seed: _randomSeed()}];
+    if (hasArc) demos.push({prompt: '', sampler: 'ARC', cfg: 1, steps: 8, seed: _randomSeed()});
+    return demos;
+  }
+  if (preset === 4) {
+    // Order matters: indices used by _populateDemoPrompts to clear prompt for "no prompt" slots.
+    //   idx 0: RF + prompt    idx 1: RF + no prompt
+    //   idx 2: ARC + prompt   idx 3: ARC + no prompt
+    const demos = [
+      {prompt: '', sampler, cfg: 7, steps: baseSteps, seed: _randomSeed()},
+      {prompt: '', sampler, cfg: 7, steps: baseSteps, seed: _randomSeed()},
+    ];
+    if (hasArc) {
+      demos.push(
+        {prompt: '', sampler: 'ARC', cfg: 1, steps: 8, seed: _randomSeed()},
+        {prompt: '', sampler: 'ARC', cfg: 1, steps: 8, seed: _randomSeed()},
+      );
+    }
+    return demos;
+  }
+  // preset === 8 (default suite)
   const demos = [
     {prompt: '', sampler: sampler, cfg: 7, steps: baseSteps, seed: _randomSeed()},
     {prompt: '', sampler: sampler, cfg: 7, steps: baseSteps, seed: _randomSeed()},
@@ -4534,7 +4573,13 @@ function _defaultNewFtDemos() {
   }
   return demos;
 }
-let _newFtDemos = _defaultNewFtDemos();
+
+// "Unconditional" indices per preset — emptied by _populateDemoPrompts after the
+// dataset-driven prompt fill. Two: none. Four: 2nd of each sampler. Eight: 4th
+// RF + 3rd ARC (legacy positions).
+const _DEMO_PRESET_EMPTY_IDX = {2: [], 4: [1, 3], 8: [3, 6]};
+
+let _newFtDemos = _defaultNewFtDemos(8);
 
 function _renderDemoEntries() {
   const container = document.getElementById('new-ft-demo-entries');
@@ -4758,9 +4803,59 @@ window.removeNewFtDemo = function() {
 
 let _newFtDemosCloned = false; // set by cloneRunSettings to skip prompt regeneration
 
+// Map GPU compute capability ("7.5", "8.0", …) → demo preset (2/4/8).
+//   Ampere+ (major >= 8):     Eight  (flex_attention works, plenty of VRAM)
+//   Turing  (sm_75 = T4 etc.): Two   (no flex_attention, limited VRAM)
+//   Volta   (sm_70 = V100):    Four  (no flex_attention but big VRAM)
+//   Older:                    Two    (conservative)
+function _pickPresetForGpu() {
+  if (_newFtSelectedGpu == null) return 8;
+  const g = _gpuData.find(x => x.gpu === _newFtSelectedGpu);
+  const cap = g && g.compute_cap;
+  if (!cap) return 8;
+  const [maj, mnr] = cap.split('.').map(x => parseInt(x) || 0);
+  if (maj >= 8) return 8;
+  if (maj === 7 && mnr >= 5) return 2;
+  if (maj === 7) return 4;
+  return 2;
+}
+
+function _updatePresetUI() {
+  for (const k of [2, 4, 8]) {
+    const btn = document.getElementById('new-ft-preset-' + k);
+    if (!btn) continue;
+    if (_newFtPreset === k) {
+      btn.classList.remove('modal-cancel');
+      btn.classList.add('modal-launch');
+    } else {
+      btn.classList.remove('modal-launch');
+      btn.classList.add('modal-cancel');
+    }
+  }
+}
+
+window.setDemoPreset = function(n) {
+  if (n !== 2 && n !== 4 && n !== 8) return;
+  _newFtPreset = n;
+  _newFtPresetUserSet = true;
+  _newFtDemos = _defaultNewFtDemos(n);
+  _populateDemoPrompts(n);
+  _updatePresetUI();
+  _renderDemoEntries();
+};
+
 window.newFtGoStep4 = function() {
+  // First entry (not cloned, user hasn't manually picked): auto-pick by GPU.
+  if (!_newFtDemosCloned && !_newFtPresetUserSet) {
+    const auto = _pickPresetForGpu();
+    if (auto !== _newFtPreset) {
+      _newFtPreset = auto;
+      _newFtDemos = _defaultNewFtDemos(auto);
+    }
+  }
+  _updatePresetUI();
   // Populate demo prompts from the prompt config heuristic (skip if cloned)
-  if (!_newFtDemosCloned) _populateDemoPrompts(true);
+  if (!_newFtDemosCloned) _populateDemoPrompts(_newFtPreset);
   _newFtDemosCloned = false;
   document.getElementById('new-ft-step3').style.display = 'none';
   document.getElementById('new-ft-step4').style.display = '';
@@ -4839,17 +4934,18 @@ function _generateOnePrompt() {
   return {prompt: _generateOnePromptFromFile(file), file};
 }
 
-function _populateDemoPrompts(clearThird) {
+function _populateDemoPrompts(preset) {
   for (const d of _newFtDemos) {
     const gen = _generateOnePrompt();
     d.prompt = gen.prompt;
     d.sourceFile = gen.file;
     if (d.seed == null) d.seed = _randomSeed();
   }
-  // On initial entry, default demo #3 and #6 to unconditional (empty prompt)
-  if (clearThird) {
-    if (_newFtDemos.length > 3) _newFtDemos[3].prompt = '';
-    if (_newFtDemos.length > 6) _newFtDemos[6].prompt = '';
+  // Clear prompts for the preset's "unconditional" slots — Two has none,
+  // Four clears the second of each sampler, Eight clears idx 3 + 6.
+  const emptyIdx = _DEMO_PRESET_EMPTY_IDX[preset || _newFtPreset] || [];
+  for (const i of emptyIdx) {
+    if (_newFtDemos.length > i) _newFtDemos[i].prompt = '';
   }
 }
 
@@ -5404,6 +5500,11 @@ window.cloneRunSettings = async function() {
         return entry;
       });
       _newFtDemosCloned = true;
+      // Sync preset state to cloned demo count so the button highlight matches
+      // and the GPU-based auto-pick doesn't overwrite the cloned list.
+      const _clonedCount = _newFtDemos.length;
+      _newFtPreset = (_clonedCount === 2 || _clonedCount === 4) ? _clonedCount : 8;
+      _newFtPresetUserSet = true;
     }
 
     updateCkptEstimate();
@@ -5445,8 +5546,10 @@ window.openNewFinetuneModal = async function() {
   document.getElementById('new-ft-step3').style.display = 'none';
   document.getElementById('new-ft-step4').style.display = 'none';
   document.querySelector('#new-ft-modal .modal').classList.remove('wide');
-  // Reset demos state
-  _newFtDemos = _defaultNewFtDemos();
+  // Reset demos state — auto-pick preset will run when user reaches Step 4
+  _newFtPreset = 8;
+  _newFtPresetUserSet = false;
+  _newFtDemos = _defaultNewFtDemos(8);
   _newFtDemosCloned = false;
   // Reset Step 2 state
   _newFtPromptConfig = { useTrigger: false, triggerText: '', triggerPct: 80,

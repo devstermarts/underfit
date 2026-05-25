@@ -2163,6 +2163,36 @@ _gpu_vram_history = {}
 _gpu_vram_history_lock = threading.Lock()
 GPU_VRAM_HISTORY_SECS = 3600  # 1 hour
 
+# Per-GPU compute capability (e.g. "7.5" Turing, "7.0" Volta, "8.0" Ampere).
+# Cached at module level: never changes during a session, so we query nvidia-smi
+# once on first request and reuse the result. Frontend uses this to pick a
+# sensible demo preset (fewer demos on older GPUs that lack flex_attention).
+_gpu_compute_caps: dict | None = None
+
+
+def _query_gpu_compute_caps() -> dict:
+    global _gpu_compute_caps
+    if _gpu_compute_caps is not None:
+        return _gpu_compute_caps
+    caps = {}
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=index,compute_cap",
+             "--format=csv,noheader,nounits"],
+            timeout=10, stderr=subprocess.DEVNULL,
+        ).decode().strip()
+        for line in out.split("\n"):
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) >= 2:
+                try:
+                    caps[int(parts[0])] = parts[1]
+                except ValueError:
+                    pass
+    except Exception:
+        pass
+    _gpu_compute_caps = caps
+    return caps
+
 # Gradio VRAM estimation
 GRADIO_VRAM_FILE = STATE_DIR / "gradio_vram_estimate.json"
 _gradio_vram_lock = threading.Lock()
@@ -3992,6 +4022,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 })
         except Exception:
             return {"gpus": [], "gradio_estimate": _gradio_vram}
+
+        caps = _query_gpu_compute_caps()
+        for g in gpus:
+            g["compute_cap"] = caps.get(g["gpu"])
 
         # Build lookup: gpu -> used_mb for checking occupancy
         gpu_mem = {g["gpu"]: g["used_mb"] for g in gpus}
