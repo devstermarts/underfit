@@ -4241,8 +4241,15 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if dl_name:
             self.send_header("Content-Disposition", f'inline; filename="{dl_name}"')
         self.end_headers()
+        # Stream in chunks so we don't load the whole MP3 into memory.
+        # ConnectionResetError / BrokenPipeError on a partial-load abort
+        # is swallowed by ThreadedHTTPServer.handle_error.
         with open(fpath, "rb") as f:
-            self.wfile.write(f.read())
+            while True:
+                chunk = f.read(1024 * 1024)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
 
     def _serve_audio_slice(self, params):
         """Slice an audio file by time range and serve for download."""
@@ -6252,6 +6259,17 @@ if __name__ == "__main__":
     print("VRAM sampler started.")
     class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
         daemon_threads = True
+
+        def handle_error(self, request, client_address):
+            # Browsers routinely abort partial audio / image loads when the
+            # user clicks away — those raise ConnectionResetError or
+            # BrokenPipeError inside the handler. The default behavior prints
+            # a multi-line traceback to stderr (and thus into our server log).
+            # Swallow those specifically; let everything else fall through.
+            exc = sys.exc_info()[1]
+            if isinstance(exc, (ConnectionResetError, BrokenPipeError)):
+                return
+            super().handle_error(request, client_address)
     # If the requested port is taken, walk forward to find the next free one.
     # 50 ports is more than enough for any reasonable contention; bigger
     # than that and there's clearly something else wrong on the box.
