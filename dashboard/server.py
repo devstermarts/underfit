@@ -1983,7 +1983,7 @@ class TrainingMonitor:
                         bash_err_f = open(bash_err_path, "wb")
                     except OSError:
                         bash_err_f = subprocess.DEVNULL
-                    launch_cmd = f"source {VENV_ACTIVATE} && cd {shlex.quote(demo_dir)} && PYTHONUNBUFFERED=1 {log_env}{backend_env}{gpu_env}{restart_cmd} 2>&1 | python3 -u -m underfit.utils.stderr_filter | tee -a {shlex.quote(log_path)}"
+                    launch_cmd = f"source {VENV_ACTIVATE} && cd {shlex.quote(demo_dir)} && PYTHONUNBUFFERED=1 {log_env}{backend_env}{gpu_env}{restart_cmd} 2>&1 | tee -a {shlex.quote(log_path)}"
                     proc = subprocess.Popen(
                         ["bash", "-c", launch_cmd],
                         stdout=subprocess.DEVNULL,
@@ -3699,7 +3699,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # installed in the venv's site-packages, only resolvable as a
         # script-directory import (lora_train.py works via that path).
         log_env = f"UNDERFIT_LOG_PATH={_q(log_path)} "
-        launch_cmd = f"source {VENV_ACTIVATE} && cd {_q(demo_dir)} && PYTHONUNBUFFERED=1 {log_env}{backend_env}{thread_env}{gpu_env}{restart_cmd} 2>&1 | python3 -u -m underfit.utils.stderr_filter | tee {_q(log_path)}"
+        launch_cmd = f"source {VENV_ACTIVATE} && cd {_q(demo_dir)} && PYTHONUNBUFFERED=1 {log_env}{backend_env}{thread_env}{gpu_env}{restart_cmd} 2>&1 | tee {_q(log_path)}"
         # Capture bash's own stderr (shell errors, source failures, etc.) — used by
         # the run-monitor's diagnose helper to surface a hint when a run dies fast
         # with an empty log.
@@ -4031,7 +4031,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             bash_err_f = open(bash_err_path, "wb")
         except OSError:
             bash_err_f = subprocess.DEVNULL
-        launch_cmd = f"source {VENV_ACTIVATE} && cd {shlex.quote(demo_dir)} && PYTHONUNBUFFERED=1 {log_env}{backend_env}{gpu_env}{new_cmd} 2>&1 | python3 -u -m underfit.utils.stderr_filter | tee {shlex.quote(str(new_log))}"
+        launch_cmd = f"source {VENV_ACTIVATE} && cd {shlex.quote(demo_dir)} && PYTHONUNBUFFERED=1 {log_env}{backend_env}{gpu_env}{new_cmd} 2>&1 | tee {shlex.quote(str(new_log))}"
         try:
             proc = subprocess.Popen(
                 ["bash", "-c", launch_cmd],
@@ -5010,7 +5010,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             f"--output-dir {_q(str(output_dir))} "
             f"--num-gpus {len(gpus)}"
             f"{half_flag}{exclude_flag} "
-            f"2>&1 | python3 -u -m underfit.utils.stderr_filter | tee {_q(str(log_path))}"
+            f"2>&1 | tee {_q(str(log_path))}"
         )
         try:
             proc = subprocess.Popen(
