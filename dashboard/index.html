@@ -5509,7 +5509,12 @@ window.filterNewFtDatasets = function() {
   for (const ds of compatible) {
     const opt = document.createElement('option');
     opt.value = ds.id;
-    opt.textContent = `${ds.name} (${ds.num_files} files)`;
+    // Show "1 file → 17 chunks" when split was used; just "N files" otherwise.
+    const _chunks = ds.num_chunks || ds.num_files;
+    const _filesLabel = (ds.num_files && _chunks && _chunks !== ds.num_files)
+      ? `${ds.num_files} file${ds.num_files === 1 ? '' : 's'} → ${_chunks} chunks`
+      : `${_chunks} files`;
+    opt.textContent = `${ds.name} (${_filesLabel})`;
     dsSel.appendChild(opt);
   }
   // Restore previous selection if still in the list
@@ -6776,7 +6781,15 @@ window.dsxShowList = async function() {
       const statusCls = ds.status === 'ready' ? 'ready' : ds.status === 'encoding' ? 'encoding' : 'error';
       const _dsModelLabel = (m) => { const shared = {'sao':'SAO / SAO-small'}; return shared[m] || (m||'?').toUpperCase(); };
       const modelTag = ds.model ? `<span style="color:var(--accent2)">${_dsModelLabel(ds.model)}</span>` : '';
-      const meta = [modelTag, ds.num_files ? ds.num_files + ' files' : '', ds.latent_dir || ''].filter(Boolean).join(' \u00b7 ');
+      // "1 file \u2192 17 chunks" when split was used; just "N files" otherwise.
+      const _chunks = ds.num_chunks || ds.num_files;
+      let _filesLabel = '';
+      if (ds.num_files && _chunks && _chunks !== ds.num_files) {
+        _filesLabel = `${ds.num_files} file${ds.num_files === 1 ? '' : 's'} \u2192 ${_chunks} chunks`;
+      } else if (_chunks) {
+        _filesLabel = `${_chunks} file${_chunks === 1 ? '' : 's'}`;
+      }
+      const meta = [modelTag, _filesLabel, ds.latent_dir || ''].filter(Boolean).join(' \u00b7 ');
       html += `<div class="dsx-card" onclick="dsxShowDetail('${ds.id}')">` +
         `<button class="dsx-delete" onclick="dsxDeleteDataset('${ds.id}',event)">Delete</button>` +
         `<button class="dsx-reencode" onclick="dsxReencode('${ds.id}',event)">Re-encode</button>` +

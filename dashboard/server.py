@@ -1925,18 +1925,27 @@ class EncodingMonitor:
                             try:
                                 with open(details_path) as f:
                                     details = json.load(f)
-                                num_files = sum(1 for _ in latent_dir.rglob("*.npy"))
-                                total = ds.get("encoding_progress", {}).get("total", num_files)
+                                # num_chunks = count of encoded .npy files (= chunks when
+                                # split is enabled, or = sources when it isn't).
+                                # num_files stays as the count of SOURCE audio files —
+                                # don't overwrite it here.
+                                num_chunks = sum(1 for _ in latent_dir.rglob("*.npy"))
+                                source_files = ds.get("num_files", num_chunks)
+                                total = ds.get("encoding_progress", {}).get("total", num_chunks)
                                 self._registry.update_dataset(ds_id,
                                     status="ready",
                                     encoding_pid=None,
-                                    num_files=num_files,
+                                    num_chunks=num_chunks,
                                     latent_dim=details.get("latent_dim", 64),
                                     sample_rate=details.get("sample_rate", 44100),
                                     details=details,
-                                    encoding_progress={"encoded": num_files, "skipped": 0, "errors": 0, "total": total},
+                                    encoding_progress={"encoded": num_chunks, "skipped": 0, "errors": 0, "total": total},
                                 )
-                                print(f"[encoding_monitor] Dataset '{ds_id}' completed: {num_files} files")
+                                if num_chunks != source_files:
+                                    print(f"[encoding_monitor] Dataset '{ds_id}' completed: "
+                                          f"{source_files} source files → {num_chunks} chunks")
+                                else:
+                                    print(f"[encoding_monitor] Dataset '{ds_id}' completed: {num_chunks} files")
                                 # Regenerate GT if missing (normally already created at dataset creation)
                                 if not ds.get("ground_truth"):
                                     _ds_files = ds.get("dataset_files", [])
@@ -1972,10 +1981,11 @@ def _validate_datasets_on_startup():
                 datasets_registry.update_dataset(ds["id"], status="error")
                 print(f"[startup] Dataset '{ds['id']}' latent dir missing — marked error")
             else:
-                # Re-count .npy files
-                num_files = sum(1 for _ in latent_dir.rglob("*.npy"))
-                if num_files != ds.get("num_files", 0):
-                    datasets_registry.update_dataset(ds["id"], num_files=num_files)
+                # Re-count .npy chunks on disk. Don't overwrite num_files
+                # (that's the SOURCE-file count, fixed at dataset creation).
+                num_chunks = sum(1 for _ in latent_dir.rglob("*.npy"))
+                if num_chunks != ds.get("num_chunks", 0):
+                    datasets_registry.update_dataset(ds["id"], num_chunks=num_chunks)
         elif ds["status"] == "encoding":
             # Check if encoding PID is still alive
             pid = ds.get("encoding_pid")
@@ -1983,8 +1993,8 @@ def _validate_datasets_on_startup():
                 latent_dir = Path(ds.get("latent_dir", ""))
                 details_path = latent_dir / "details.json"
                 if details_path.exists():
-                    num_files = sum(1 for _ in latent_dir.rglob("*.npy"))
-                    datasets_registry.update_dataset(ds["id"], status="ready", encoding_pid=None, num_files=num_files)
+                    num_chunks = sum(1 for _ in latent_dir.rglob("*.npy"))
+                    datasets_registry.update_dataset(ds["id"], status="ready", encoding_pid=None, num_chunks=num_chunks)
                     print(f"[startup] Dataset '{ds['id']}' encoding finished (PID dead, details exists)")
                 else:
                     datasets_registry.update_dataset(ds["id"], status="error", encoding_pid=None)
