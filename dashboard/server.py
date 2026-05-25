@@ -1,20 +1,8 @@
 #!/usr/bin/env python3
 """Training dashboard server for LoRA finetuning runs."""
 
-import os
-import sys
-
-# Put the underfit project root (parent of dashboard/) on sys.path so handlers
-# that lazy-import from `underfit.*` work regardless of how the script was
-# launched (`python dashboard/server.py`, uvicorn-style, etc.). The package
-# isn't installed in the venv (`package = false` in pyproject.toml), so we
-# can't rely on site-packages resolution.
-_DASHBOARD_DIR = os.path.dirname(os.path.abspath(__file__))
-_PROJECT_ROOT = os.path.dirname(_DASHBOARD_DIR)
-if _PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _PROJECT_ROOT)
-
 import json
+import os
 import random
 import re
 import shlex
@@ -1987,17 +1975,12 @@ class TrainingMonitor:
                     demo_dir = fresh_run.get("demo_source_dir", str(RUNS_DIR))
                     os.makedirs(demo_dir, exist_ok=True)
                     log_env = f"UNDERFIT_LOG_PATH={shlex.quote(log_path)} "
-                    # PYTHONPATH must be `export`ed (not inline `VAR=val cmd`)
-                    # so both pythons in the pipe inherit it — the second one
-                    # (`-m underfit.utils.stderr_filter`) needs it to find
-                    # the package since underfit isn't installed in the venv.
-                    py_path_export = f"export PYTHONPATH={shlex.quote(str(BASE_DIR))}${{PYTHONPATH:+:$PYTHONPATH}} && "
                     bash_err_path = log_path + ".bash.err"
                     try:
                         bash_err_f = open(bash_err_path, "wb")
                     except OSError:
                         bash_err_f = subprocess.DEVNULL
-                    launch_cmd = f"source {VENV_ACTIVATE} && cd {shlex.quote(demo_dir)} && {py_path_export}PYTHONUNBUFFERED=1 {log_env}{backend_env}{gpu_env}{restart_cmd} 2>&1 | python3 -u -m underfit.utils.stderr_filter | tee -a {shlex.quote(log_path)}"
+                    launch_cmd = f"source {VENV_ACTIVATE} && cd {shlex.quote(demo_dir)} && PYTHONUNBUFFERED=1 {log_env}{backend_env}{gpu_env}{restart_cmd} 2>&1 | python3 -u -m underfit.utils.stderr_filter | tee -a {shlex.quote(log_path)}"
                     proc = subprocess.Popen(
                         ["bash", "-c", launch_cmd],
                         stdout=subprocess.DEVNULL,
@@ -3677,9 +3660,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # installed in the venv's site-packages, only resolvable as a
         # script-directory import (lora_train.py works via that path).
         log_env = f"UNDERFIT_LOG_PATH={_q(log_path)} "
-        # export so the second python in the pipe (the stderr_filter) inherits it.
-        py_path_export = f"export PYTHONPATH={_q(str(BASE_DIR))}${{PYTHONPATH:+:$PYTHONPATH}} && "
-        launch_cmd = f"source {VENV_ACTIVATE} && cd {_q(demo_dir)} && {py_path_export}PYTHONUNBUFFERED=1 {log_env}{backend_env}{thread_env}{gpu_env}{restart_cmd} 2>&1 | python3 -u -m underfit.utils.stderr_filter | tee {_q(log_path)}"
+        launch_cmd = f"source {VENV_ACTIVATE} && cd {_q(demo_dir)} && PYTHONUNBUFFERED=1 {log_env}{backend_env}{thread_env}{gpu_env}{restart_cmd} 2>&1 | python3 -u -m underfit.utils.stderr_filter | tee {_q(log_path)}"
         # Capture bash's own stderr (shell errors, source failures, etc.) — used by
         # the run-monitor's diagnose helper to surface a hint when a run dies fast
         # with an empty log.
@@ -4006,13 +3987,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         demo_dir = run.get("demo_source_dir", str(RUNS_DIR))
         os.makedirs(demo_dir, exist_ok=True)
         log_env = f"UNDERFIT_LOG_PATH={shlex.quote(str(new_log))} "
-        py_path_export = f"export PYTHONPATH={shlex.quote(str(BASE_DIR))}${{PYTHONPATH:+:$PYTHONPATH}} && "
         bash_err_path = str(new_log) + ".bash.err"
         try:
             bash_err_f = open(bash_err_path, "wb")
         except OSError:
             bash_err_f = subprocess.DEVNULL
-        launch_cmd = f"source {VENV_ACTIVATE} && cd {shlex.quote(demo_dir)} && {py_path_export}PYTHONUNBUFFERED=1 {log_env}{backend_env}{gpu_env}{new_cmd} 2>&1 | python3 -u -m underfit.utils.stderr_filter | tee {shlex.quote(str(new_log))}"
+        launch_cmd = f"source {VENV_ACTIVATE} && cd {shlex.quote(demo_dir)} && PYTHONUNBUFFERED=1 {log_env}{backend_env}{gpu_env}{new_cmd} 2>&1 | python3 -u -m underfit.utils.stderr_filter | tee {shlex.quote(str(new_log))}"
         try:
             proc = subprocess.Popen(
                 ["bash", "-c", launch_cmd],
@@ -4978,7 +4958,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         _q = shlex.quote
         cmd = (
             f"source {VENV_ACTIVATE} && "
-            f"export PYTHONPATH={_q(str(BASE_DIR))}${{PYTHONPATH:+:$PYTHONPATH}} && "
             f"CUDA_VISIBLE_DEVICES={gpu_str} PYTHONUNBUFFERED=1 "
             f"python3 {PRE_DIR / 'pre_encode.py'} "
             f"--input-dir {_q(str(input_path))} "

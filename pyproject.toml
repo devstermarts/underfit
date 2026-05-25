@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "underfit"
 version = "0.1.0"
@@ -64,8 +68,18 @@ Repository = "https://github.com/dada-bots/underfit"
 Issues = "https://github.com/dada-bots/underfit/issues"
 
 [tool.uv]
-# underfit is run directly from the clone — `package = false` tells uv not
-# to build/install it as a wheel. `uv sync` just creates .venv and installs
-# the dependencies above.
-package = false
+# Install underfit itself editably so `from underfit.X import Y` and
+# `python -m underfit.X` resolve from anywhere — no sys.path hacks needed
+# in scripts or in the dashboard handlers.
+package = true
 required-version = ">=0.5"
+
+[tool.hatch.build.targets.wheel]
+# Only ship the `underfit/` package — not dashboard/, dataset_processing/,
+# colab.ipynb, etc. Those are run-from-clone-only artifacts.
+packages = ["underfit"]
+
+[project.scripts]
+# CLI shims installed into the venv's bin/. After `uv sync` you can call
+# these directly without `python -m ...`:
+underfit-setup = "underfit.cli.setup:main"
