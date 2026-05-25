@@ -83,3 +83,4 @@ packages = ["underfit"]
 # CLI shims installed into the venv's bin/. After `uv sync` you can call
 # these directly without `python -m ...`:
 underfit-setup = "underfit.cli.setup:main"
+underfit-update-registries = "underfit.cli.update_registries:main"
