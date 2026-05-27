@@ -6,6 +6,9 @@
 
 ---
 
+<img width="704" height="908" alt="underfit-dashboard-screenshot" src="https://github.com/user-attachments/assets/2addccd6-de7b-4af8-a7b2-b9e61b2de70f" />
+
+
 
 ## Quickstart — local GPU box
 
