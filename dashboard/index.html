@@ -819,14 +819,9 @@
   .ctrl-btn.dataset { border-color: var(--turquoise); color: var(--turquoise); }
   .ctrl-btn.dataset:hover { background: var(--turquoise); color: white; }
   .ctrl-btn:disabled { opacity: 0.3; cursor: not-allowed; filter: none; }
-  .delete-run-section { text-align: center; padding: 32px 0; margin-top: 24px; border-top: 1px solid var(--border); opacity: 0; transition: opacity 0.5s ease; }
-  .delete-run-section.visible { opacity: 1; }
-  .delete-trigger { background: none; border: none; cursor: pointer; font-size: 1.2em; padding: 4px 8px; opacity: 0.4; transition: opacity 0.15s; }
-  .delete-trigger:hover { opacity: 0.7; }
-  .ctrl-btn.delete { background: transparent; color: var(--red); border: 1px solid var(--red); opacity: 0.6; display: none; }
-  .ctrl-btn.delete.shown { display: inline-block; animation: fadeIn 0.2s ease; }
-  .ctrl-btn.delete:hover { opacity: 1; background: rgba(255,0,0,0.1); }
-  @keyframes fadeIn { from { opacity: 0; } to { opacity: 0.6; } }
+  .delete-run-section { text-align: center; padding: 32px 0; margin-top: 24px; border-top: 1px solid var(--border); }
+  .ctrl-btn.delete { background: var(--red); color: white; border: 1px solid var(--red); display: inline-block; font-weight: 700; }
+  .ctrl-btn.delete:hover { filter: brightness(1.15); }
 
   /* Resume modal */
   .resume-input {
@@ -1123,7 +1118,6 @@
     <div id="demo-content"></div>
   </div>
   <div class="delete-run-section" id="delete-run-section">
-    <button class="delete-trigger" id="delete-trigger" onclick="showDeleteBtn()">&#10060;</button>
     <button class="ctrl-btn delete" id="delete-btn" onclick="deleteRun()">DELETE TRAINING RUN</button>
   </div>
   </div><!-- /run-detail -->
@@ -4226,12 +4220,10 @@ async function refresh() {
       return;
     }
     const refreshRunId = currentRunId;  // snapshot AFTER loadRuns so first call doesn't abort
-    // Reset delete section: hide full button, show cross, fade in after content loads
+    // Delete section: hidden until a run is selected, then fade in after content loads.
     const delSection = document.getElementById('delete-run-section');
     delSection.classList.remove('visible');
     delSection.style.display = currentRunId ? '' : 'none';
-    document.getElementById('delete-trigger').style.display = '';
-    document.getElementById('delete-btn').classList.remove('shown');
     // Fire all fetches independently — each section renders when its data arrives.
     // When USE_SSE is on, status / checkpoints / demos / gradio all come via
     // the long-lived /api/stream connection, so these one-off fetches would
@@ -4347,11 +4339,6 @@ window.killTraining = async function() {
   } catch (e) { alert('Kill failed: ' + e); }
   _controlPending = false;
   await refresh();
-};
-
-window.showDeleteBtn = function() {
-  document.getElementById('delete-trigger').style.display = 'none';
-  document.getElementById('delete-btn').classList.add('shown');
 };
 
 window.deleteRun = async function() {
