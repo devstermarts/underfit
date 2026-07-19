@@ -5,6 +5,7 @@
 # isn't covered by .gitignore, but it's also outside the repo so git won't see
 # it anyway.
 state/
+_*/
 
 # ── Editor / OS / build artifacts ───────────────────────────────────────
 __pycache__/
