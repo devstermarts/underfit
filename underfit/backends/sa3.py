@@ -280,7 +280,8 @@ def create_dataloader(dataset_config, batch_size, sample_size, sample_rate,
     if dataset_type == "pre_encoded":
         configs = []
         for ds in dataset_config["datasets"]:
-            cmf = _load_custom_metadata_fn(ds.get("custom_metadata_module"))
+            cmf = _load_custom_metadata_fn(
+                ds.get("custom_metadata_module"), dataset_config)
             configs.append(LatentDatasetConfig(
                 id=ds["id"],
                 path=_resolve_app_relative_path(ds["path"]),
@@ -301,7 +302,8 @@ def create_dataloader(dataset_config, batch_size, sample_size, sample_rate,
         force_channels = "mono" if audio_channels == 1 else "stereo"
         configs = []
         for ds in dataset_config["datasets"]:
-            cmf = _load_custom_metadata_fn(ds.get("custom_metadata_module"))
+            cmf = _load_custom_metadata_fn(
+                ds.get("custom_metadata_module"), dataset_config)
             configs.append(LocalDatasetConfig(
                 id=ds["id"],
                 path=_resolve_app_relative_path(ds["path"]),
@@ -373,7 +375,25 @@ def create_dataloader(dataset_config, batch_size, sample_size, sample_rate,
     )
 
 
-def _load_custom_metadata_fn(module_path):
+def _load_custom_metadata_fn(module_path, dataset_config=None):
+    """Load a custom_metadata_module and hand it the dataset config.
+
+    `dataset_config` must be the *whole* config, not the per-dataset entry:
+    prompt_templates.set_config() reads the top-level "prompt_config" that the
+    dashboard writes there, so passing the entry would silently leave the
+    module unconfigured.
+
+    Restores the call that stable-audio-tools makes on the lora-cj branch
+    (data/dataset.py, commit 894835ff "Custom prompt templates for demos").
+    Without it prompt_templates.py never sees prompt_config and falls back to
+    legacy tag prompts — or to empty strings when the clips carry no tags — so
+    everything configured in NEW FINETUNE is discarded.
+
+    Note the config has to be set *before* the returned function is handed to
+    the dataset: datasets that feed DataLoader workers dill-pickle it, snapshotting
+    the module globals at that moment. Setting it afterwards would leave the
+    workers with an unconfigured copy.
+    """
     if module_path is None:
         return None
     module_path = _resolve_app_relative_path(module_path)
@@ -381,6 +401,8 @@ def _load_custom_metadata_fn(module_path):
     spec = importlib.util.spec_from_file_location("metadata_module", module_path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    if dataset_config is not None and hasattr(mod, "set_config"):
+        mod.set_config(dataset_config)
     return mod.get_custom_metadata
 
 
