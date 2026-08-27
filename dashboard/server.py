@@ -30,6 +30,12 @@ import torch
 from PIL import Image
 
 BASE_DIR = Path(__file__).parent.parent
+# Spectrogram rendering is shared with the training loop (which draws demo
+# spectrograms from audio already in memory, so the dashboard never re-decodes
+# them). The repo root isn't importable by default from dashboard/.
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+from underfit.spectrogram import render_to_jpg   # noqa: E402
 DASHBOARD_DIR = Path(__file__).parent
 
 # Writable user state — runs.json/datasets.json, per-run outputs, generated
@@ -2998,12 +3004,6 @@ def _extract_hyperparams(run):
     return result if result else None
 
 
-SPEC_BANDS = [
-    (0, 200, (1.0, 0.0, 0.0)),      # Bass -> Red
-    (200, 1500, (0.0, 1.0, 0.0)),   # Mid  -> Green
-    (1500, 16000, (0.0, 0.0, 1.0)), # High -> Blue
-]
-SPEC_W, SPEC_H = 300, 60
 _spec_pool = ThreadPoolExecutor(max_workers=4)
 
 # libsndfile 1.2.2's MPEG decoder reports errors by longjmp-ing through a
@@ -3015,70 +3015,122 @@ _spec_pool = ThreadPoolExecutor(max_workers=4)
 _sndfile_lock = threading.Lock()
 
 # Pre-compute band colors as (3, 3) array for vectorized multiply
-_BAND_COLORS = np.array([c for _, _, c in SPEC_BANDS], dtype=np.float32)
 
 
 # Slaney mel scale (linear < 1 kHz, log above) — matches librosa default.
-_F_SP = 200.0 / 3
-_MIN_LOG_HZ = 1000.0
-_MIN_LOG_MEL = _MIN_LOG_HZ / _F_SP
-_LOGSTEP = np.log(6.4) / 27.0
 
 
-def _hz_to_mel(hz):
-    hz = np.asarray(hz, dtype=np.float64)
-    # np.where evaluates both branches — mask the log input so the linear-region
-    # values don't trigger log(0) warnings (they're discarded anyway).
-    log_term = np.log(np.maximum(hz, _MIN_LOG_HZ) / _MIN_LOG_HZ) / _LOGSTEP
-    return np.where(hz >= _MIN_LOG_HZ, _MIN_LOG_MEL + log_term, hz / _F_SP)
 
 
-def _mel_to_hz(mels):
-    mels = np.asarray(mels, dtype=np.float64)
-    return np.where(mels >= _MIN_LOG_MEL,
-                    _MIN_LOG_HZ * np.exp(_LOGSTEP * (mels - _MIN_LOG_MEL)),
-                    _F_SP * mels)
 
 
-def _mel_frequencies(n_mels, fmax, fmin=0.0):
-    return _mel_to_hz(np.linspace(_hz_to_mel(fmin), _hz_to_mel(fmax), n_mels))
 
 
-@lru_cache(maxsize=8)
-def _mel_filterbank(n_mels, n_fft, sr, fmax):
-    pts = _mel_to_hz(np.linspace(_hz_to_mel(0.0), _hz_to_mel(fmax), n_mels + 2))
-    fft_f = np.linspace(0, sr / 2, n_fft // 2 + 1)
-    filt = np.zeros((n_mels, n_fft // 2 + 1), dtype=np.float32)
-    for i in range(n_mels):
-        lo, ce, hi = pts[i], pts[i + 1], pts[i + 2]
-        left = (fft_f - lo) / max(ce - lo, 1e-10)
-        right = (hi - fft_f) / max(hi - ce, 1e-10)
-        filt[i] = np.maximum(0, np.minimum(left, right))
-    # Slaney area-normalization (matches librosa norm='slaney' default)
-    enorm = (2.0 / (pts[2:n_mels + 2] - pts[0:n_mels])).astype(np.float32)
-    filt *= enorm[:, None]
-    return torch.from_numpy(filt)
 
 
-def _melspectrogram(y_ch, sr, n_mels=30, fmax=16000, hop_length=2048, n_fft=2048):
-    y_t = torch.from_numpy(np.ascontiguousarray(y_ch)).float()
-    win = torch.hann_window(n_fft)
-    spec = torch.stft(y_t, n_fft=n_fft, hop_length=hop_length, window=win,
-                      center=True, return_complex=True, pad_mode='reflect')
-    return (_mel_filterbank(n_mels, n_fft, sr, fmax) @ spec.abs().square()).numpy()
+_decode_backend_logged = set()
 
 
-def _power_to_db(S, top_db=80.0):
-    log_spec = 10.0 * np.log10(np.maximum(S, 1e-10))
-    return np.maximum(log_spec - log_spec.max(), -top_db)
+def _log_decode_backend(name):
+    """Say which decoder we settled on, once per process."""
+    if name in _decode_backend_logged:
+        return
+    _decode_backend_logged.add(name)
+    print(f"[spectrogram] decoding audio via {name}", flush=True)
+
+
+def _decode_torchaudio(path):
+    """torchaudio's ffmpeg backend: links libav, which keeps per-stream state,
+    so concurrent decodes are safe. Never the 'soundfile' backend — that is the
+    same libsndfile, and would reintroduce the SIGBUS."""
+    import torchaudio
+    if "ffmpeg" not in torchaudio.list_audio_backends():
+        raise RuntimeError("torchaudio has no ffmpeg backend")
+    w, sr = torchaudio.load(str(path), backend="ffmpeg")
+    return w.numpy(), sr
+
+
+def _decode_ffmpeg(path):
+    """ffmpeg as a subprocess: a separate process per decode, so nothing is
+    shared. Needs ffprobe to report the native rate, since raw PCM carries none
+    and resampling here would diverge from the other backends."""
+    probe = subprocess.run(
+        ["ffprobe", "-v", "quiet", "-select_streams", "a:0",
+         "-show_entries", "stream=sample_rate,channels",
+         "-of", "csv=p=0", str(path)],
+        capture_output=True, check=True, timeout=30,
+    ).stdout.decode().strip().split(",")
+    sr, ch = int(probe[0]), int(probe[1])
+    raw = subprocess.run(
+        ["ffmpeg", "-v", "quiet", "-i", str(path), "-f", "f32le",
+         "-acodec", "pcm_f32le", "-ac", str(ch), "-"],
+        capture_output=True, check=True, timeout=600,
+    ).stdout
+    y = np.frombuffer(raw, dtype=np.float32)
+    if ch > 1:
+        y = y.reshape(-1, ch).T
+    return np.ascontiguousarray(y), sr
+
+
+def _decode_soundfile(path):
+    """Last resort. libsndfile's MPEG error path longjmps through a
+    process-global jmpbuf and its error state is global too, so one decode at a
+    time — see _sndfile_lock."""
+    with _sndfile_lock:
+        y, sr = sf.read(str(path), dtype='float32', always_2d=False)
+    if y.ndim == 2:
+        y = y.T  # soundfile gives (n, c); we want (c, n)
+    return y, sr
+
+
+# Both ffmpeg routes are parallel-safe; only soundfile has to serialize. Which
+# of the two is faster depends on size, measured on this box with 4 workers:
+#
+#                      ~3s clips (x16)     ~190s clips (x12)
+#   torchaudio/ffmpeg      52 ms               3.14 s
+#   ffmpeg subprocess     460 ms               1.90 s
+#   locked soundfile       39 ms               2.52 s
+#
+# torchaudio decodes in-process but only partly releases the GIL (1.7x on four
+# workers); the subprocess gets a true 3x but pays ~200 ms of spawn per file
+# (ffprobe + ffmpeg), which dominates on short clips. So pick by size rather
+# than committing to one order.
+_SUBPROCESS_MIN_BYTES = 1_000_000
+
+_DECODE_SMALL = (
+    ("torchaudio/ffmpeg", _decode_torchaudio),
+    ("ffmpeg", _decode_ffmpeg),
+    ("soundfile (serialized)", _decode_soundfile),
+)
+_DECODE_LARGE = (
+    ("ffmpeg", _decode_ffmpeg),
+    ("torchaudio/ffmpeg", _decode_torchaudio),
+    ("soundfile (serialized)", _decode_soundfile),
+)
+
+
+def _decoders_for(path):
+    try:
+        big = os.path.getsize(path) >= _SUBPROCESS_MIN_BYTES
+    except OSError:
+        big = False
+    return _DECODE_LARGE if big else _DECODE_SMALL
 
 
 def _load_audio(path, target_sr=32000):
     """Load + resample to target_sr. Returns (channels, samples) like librosa(mono=False)."""
-    with _sndfile_lock:  # see _sndfile_lock: concurrent mp3 decode is a SIGBUS
-        y, sr = sf.read(str(path), dtype='float32', always_2d=False)
-    if y.ndim == 2:
-        y = y.T  # soundfile gives (n, c); we want (c, n)
+    errors = []
+    y = sr = None
+    for name, fn in _decoders_for(path):
+        try:
+            y, sr = fn(path)
+        except Exception as e:
+            errors.append(f"{name}: {type(e).__name__}: {e}")
+            continue
+        _log_decode_backend(name)
+        break
+    if y is None:
+        raise RuntimeError("no audio decoder succeeded — " + "; ".join(errors))
     if sr != target_sr:
         y_t = torch.from_numpy(np.ascontiguousarray(y))
         if y_t.ndim == 1:
@@ -3090,83 +3142,37 @@ def _load_audio(path, target_sr=32000):
     return y, target_sr
 
 
-def _mel_channel(y_ch, sr, n_mels=30):
-    """Compute dB-scaled mel + band-tinted RGB for one channel.
-
-    Single mel spectrogram (no redundant STFT), hop=2048 for ~4x fewer frames.
-    """
-    S = _melspectrogram(y_ch, sr, n_mels=n_mels, fmax=16000, hop_length=2048)
-
-    # dB-scale with gamma for visual contrast
-    S_db = _power_to_db(S)
-    np.clip(S_db, -60, 0, out=S_db)
-    S_db += 60.0
-    S_db /= 60.0
-    np.power(S_db, 0.6, out=S_db)
-
-    # Band colors from mel bin frequencies (no separate STFT needed)
-    mel_f = _mel_frequencies(n_mels, fmax=16000)
-    n_frames = S.shape[1]
-    # Compute per-band normalized energy, then mix into RGB
-    band_norms = np.empty((3, n_frames), dtype=np.float32)
-    for i, (flo, fhi, _) in enumerate(SPEC_BANDS):
-        mask = (mel_f >= flo) & (mel_f < fhi)
-        if mask.any():
-            power = np.sum(S[mask], axis=0)
-            db = 10.0 * np.log10(power + 1e-10)
-            np.clip(db, -20, None, out=db)
-            db -= -20
-            mx = db.max()
-            if mx > 0:
-                db /= mx
-            band_norms[i] = db
-        else:
-            band_norms[i] = 0.0
-
-    # (n_frames, 3) = (n_frames, 3_bands) @ (3_bands, 3_rgb)
-    rgb = band_norms.T @ _BAND_COLORS
-    for c in range(3):
-        mx = rgb[:, c].max()
-        if mx > 0:
-            rgb[:, c] /= mx
-
-    return S_db, rgb
 
 
 def generate_spectrogram(mp3_path, jpg_path):
-    """Generate a 300x60 3-band tinted stereo mel spectrogram."""
+    """Decode a file and render its spectrogram.
+
+    Only for audio the dashboard did not produce (ground truth, imports). Demos
+    arrive with a .jpg already written by the training loop, which is why every
+    caller checks for one first — see _process_run_demos.
+    """
     try:
         y, sr = _load_audio(mp3_path, target_sr=32000)
-        # Force stereo. _load_audio returns 1D for mono-no-resample but 2D
-        # (1, N) for mono-after-resample (the interpolate branch unsqueezes
-        # mono inputs and never re-squeezes). Handle both.
-        if y.ndim == 1:
-            y = np.stack([y, y])
-        elif y.shape[0] == 1:
-            y = np.repeat(y, 2, axis=0)
-
-        S_L, rgb_L = _mel_channel(y[0], sr)
-        S_R, rgb_R = _mel_channel(y[1], sr)
-
-        nf = min(S_L.shape[1], S_R.shape[1])
-        S_L, S_R = S_L[:, :nf], S_R[:, :nf]
-        rgb_L, rgb_R = rgb_L[:nf], rgb_R[:nf]
-        nm = S_L.shape[0]
-
-        S_L = S_L[::-1]  # L: flip so bass at bottom
-
-        # Vectorized compositing — no Python loop over frames
-        img = np.empty((nm * 2, nf, 3), dtype=np.float32)
-        img[:nm] = S_L[:, :, np.newaxis] * rgb_L[np.newaxis, :, :]
-        img[nm:] = S_R[:, :, np.newaxis] * rgb_R[np.newaxis, :, :]
-
-        np.clip(img, 0, 1, out=img)
-        img *= 255
-        Image.fromarray(img.astype(np.uint8)).resize(
-            (SPEC_W, SPEC_H), Image.LANCZOS).save(
-            str(jpg_path), quality=60, optimize=True)
+        render_to_jpg(y, sr, jpg_path)
     except Exception as e:
         print(f"[spectrogram] Failed for {mp3_path}: {e}")
+
+
+def _place_spectrogram(src_audio, jpg_dest, spec_futs):
+    """Put a spectrogram at jpg_dest, cheapest route first.
+
+    The training loop renders each demo's spectrogram from audio still in
+    memory and drops the .jpg beside the clip, so the usual case is a copy —
+    no decode at all. Only audio we didn't produce (or older runs, or the MLX
+    trainer) falls through to decoding.
+    """
+    if jpg_dest.exists() and jpg_dest.stat().st_size > 0:
+        return
+    jpg_src = src_audio.with_suffix(".jpg")
+    if jpg_src.exists() and jpg_src.stat().st_size > 0:
+        shutil.copy2(jpg_src, jpg_dest)
+        return
+    spec_futs.append(_spec_pool.submit(generate_spectrogram, src_audio, jpg_dest))
 
 
 def _process_run_demos(run):
@@ -3211,10 +3217,8 @@ def _process_run_demos(run):
         dest_size = dest.stat().st_size if dest.exists() else 0
         if dest_size == 0 or dest_size != src_size:
             shutil.copy2(src, dest)
-        # Generate spectrogram for copied clip
-        jpg_dest = step_dir / f"demo_{idx}.jpg"
-        if not jpg_dest.exists() or jpg_dest.stat().st_size == 0:
-            spec_futs.append(_spec_pool.submit(generate_spectrogram, dest, jpg_dest))
+        # Prefer the trainer-rendered spectrogram; decode only if absent.
+        _place_spectrogram(src, step_dir / f"demo_{idx}.jpg", spec_futs)
         # Copy JSON sidecar if present
         json_src = src.with_suffix(".json")
         json_dest = step_dir / f"demo_{idx}.json"
@@ -3234,9 +3238,7 @@ def _process_run_demos(run):
         dest = step_dir / f"demo_arc{src.suffix}"
         if not dest.exists() or dest.stat().st_size == 0:
             shutil.copy2(src, dest)
-        jpg_dest = step_dir / "demo_arc.jpg"
-        if not jpg_dest.exists():
-            spec_futs.append(_spec_pool.submit(generate_spectrogram, dest, jpg_dest))
+        _place_spectrogram(src, step_dir / "demo_arc.jpg", spec_futs)
         json_src = src.with_suffix(".json")
         json_dest = step_dir / "demo_arc.json"
         if json_src.exists() and not json_dest.exists():
