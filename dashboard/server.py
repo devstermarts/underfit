@@ -436,6 +436,47 @@ if not VENV_PYTHON.exists():
     VENV_PYTHON = Path(sys.executable)
 
 
+def _normalize_restart_cmd(cmd):
+    """Repoint a stored launch command at this checkout's trainer if the one it
+    records is gone.
+
+    restart_cmd is a provenance record — replayed verbatim on resume and on
+    crash restart — so it embeds the absolute path of the trainer script as it
+    was at launch time. The script used to be lora-train.py and is now
+    lora_train.py, which leaves every run created before that rename unable to
+    start:
+
+        python3: can't open file '.../lora-train.py': No such file or directory
+
+    Rather than migrating everyone's runs.json, fix it where it's replayed. Only
+    rewritten when the recorded path is actually missing, so a command that
+    deliberately points at another checkout is left alone, and a genuinely
+    broken path still fails with its original message if we can't do better.
+    """
+    if not cmd:
+        return cmd
+    m = re.search(r"(?:^|\s)(?:python3?|[^\s]*/python3?)\s+(\S+\.py)", cmd)
+    if not m:
+        return cmd
+    script = m.group(1).strip("'\"")
+    resolved = os.path.expanduser(script)
+    if os.path.isfile(resolved):
+        return cmd
+
+    base = os.path.basename(resolved)
+    candidates = []
+    if "-" in base:
+        # lora-train.py -> lora_train.py, same directory first
+        candidates.append(os.path.join(os.path.dirname(resolved), base.replace("-", "_")))
+        candidates.append(str(BASE_DIR / base.replace("-", "_")))
+    candidates.append(str(BASE_DIR / base))
+    for cand in candidates:
+        if os.path.isfile(cand):
+            print(f"[launch] trainer moved: {script} -> {cand}", flush=True)
+            return cmd.replace(script, cand)
+    return cmd
+
+
 def _bash_path(value):
     s = str(value)
     return s.replace("\\", "/") if IS_WINDOWS else s
@@ -2225,6 +2266,7 @@ class TrainingMonitor:
                     # Ensure gradient clipping is present (older runs may lack it)
                     if "--gradient-clip-val" not in restart_cmd:
                         restart_cmd += "     --gradient-clip-val 1.0"
+                    restart_cmd = _normalize_restart_cmd(restart_cmd)
                     # Restart training and append stdout/stderr to the log file.
                     gpu_env = _cuda_env_prefix(gpu)
                     backend_env = _backend_env_for_model(fresh_run.get("base_model"))
@@ -4486,6 +4528,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if not restart_cmd:
             self._json_response({"error": "this run has no restart_cmd — cannot resume"}, status=400)
             return
+        restart_cmd = _normalize_restart_cmd(restart_cmd)
         new_max_steps = body.get("max_steps")
         if not new_max_steps or not isinstance(new_max_steps, int):
             self._json_response({"error": "max_steps (int) required"}, status=400)
