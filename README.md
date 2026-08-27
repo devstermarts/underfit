@@ -135,7 +135,7 @@ Pick one in the **LoRA type** dropdown of *New Finetune*. All variants produce a
 *New Finetune* dropdown. Existing runs and checkpoints that use them keep working — nothing
 is removed from the loaders, and the dashboard still labels them correctly.
 
-Why: **DoRA-rows** sounds the best of the family, merges into base weights more cleanly, and
+Why: **DoRA-rows** sounds the best of the family, merges with other DoRAs more cleanly, and
 has optimisable speedups available at both training and inference time. The variants that
 normalise along columns are much harder to optimise at inference — in practice they run
 about **2× slower and use about 2× the memory** for no quality benefit. There's no reason to
