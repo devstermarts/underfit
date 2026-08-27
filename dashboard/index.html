@@ -1341,15 +1341,15 @@
         <div>
           <label class="modal-label">LoRA type</label>
           <select class="modal-select" id="new-ft-lora-type" onchange="validateNewFt();updateCkptEstimate()">
+            <!-- DoRA-cols, BoRA, DoRA-cols-XS and BoRA-XS are deprecated and no
+                 longer offered for new runs. Their labels and size estimates are
+                 kept elsewhere in this file so existing runs still display. -->
             <option value="lora">LoRA</option>
             <option value="dora-rows" selected>DoRA-rows</option>
-            <option value="dora-cols">DoRA-cols</option>
-            <option value="bora">BoRA</option>
             <option value="lora-xs">LoRA-XS</option>
             <option value="dora-rows-xs">DoRA-rows-XS</option>
-            <option value="dora-cols-xs">DoRA-cols-XS</option>
-            <option value="bora-xs">BoRA-XS</option>
           </select>
+          <div id="new-ft-lora-type-note" style="display:none;font-size:0.7em;color:#e0a37a;margin-top:3px"></div>
         </div>
         <div>
           <label class="modal-label">Rank</label>
@@ -5815,7 +5815,7 @@ window.handleSeedLoraFile = async function(ev) {
     document.getElementById('new-ft-seed-filename').value = data.filename;
     document.getElementById('new-ft-seed-step').value = (data.config && data.config.step) || 0;
     const cfg = data.config || {};
-    if (cfg.adapter_type) document.getElementById('new-ft-lora-type').value = cfg.adapter_type;
+    if (cfg.adapter_type) setNewFtLoraType(cfg.adapter_type);
     if (cfg.rank != null) document.getElementById('new-ft-rank').value = cfg.rank;
     if (cfg.alpha != null) document.getElementById('new-ft-alpha').value = cfg.alpha;
     if (Array.isArray(cfg.include)) document.getElementById('new-ft-include').value = cfg.include.join(',');
@@ -5889,6 +5889,26 @@ window.handleSeedLoraFile = async function(ev) {
     + `Layer dimensions match these models — pick the one this LoRA came from:`,
     choiceBtns);
 };
+
+// Set the LoRA-type dropdown from existing data (a cloned run, or an uploaded
+// seed LoRA's config). Deprecated types are no longer options, and assigning an
+// unknown value to a <select> silently leaves it blank — which would post an
+// empty lora_type and start a broken run. Fall back to the default and say so.
+function setNewFtLoraType(value) {
+  const sel = document.getElementById('new-ft-lora-type');
+  if (!sel || !value) return;
+  if (Array.from(sel.options).some(o => o.value === value)) {
+    sel.value = value;
+    return;
+  }
+  sel.value = 'dora-rows';
+  const warn = document.getElementById('new-ft-lora-type-note');
+  if (warn) {
+    warn.textContent = value + ' is deprecated \u2014 using DoRA-rows';
+    warn.style.display = '';
+  }
+  console.warn('[new-finetune] deprecated LoRA type "' + value + '" -> dora-rows');
+}
 
 function updateCkptEstimate() {
   // Don't overwrite a validation error currently shown in this element — the
@@ -6086,7 +6106,7 @@ window.cloneRunSettings = async function() {
     _newFtDemos = _defaultNewFtDemos();
 
     // Populate LoRA settings
-    if (s.lora_type) document.getElementById('new-ft-lora-type').value = s.lora_type;
+    if (s.lora_type) setNewFtLoraType(s.lora_type);
     if (s.rank) document.getElementById('new-ft-rank').value = s.rank;
     if (s.alpha) document.getElementById('new-ft-alpha').value = s.alpha;
     if (s.lora_include) document.getElementById('new-ft-include').value = s.lora_include;
@@ -6219,6 +6239,8 @@ window.openNewFinetuneModal = async function() {
   document.getElementById('new-ft-batch').value = '1';
   document.getElementById('new-ft-steps').value = '40000';
   document.getElementById('new-ft-lora-type').value = 'dora-rows';
+  const _ltNote = document.getElementById('new-ft-lora-type-note');
+  if (_ltNote) { _ltNote.textContent = ''; _ltNote.style.display = 'none'; }
   document.getElementById('new-ft-rank').value = '16';
   document.getElementById('new-ft-alpha').value = '';
   document.getElementById('new-ft-crop-mode').value = 'random';
