@@ -383,11 +383,12 @@ def _load_custom_metadata_fn(module_path, dataset_config=None):
     dashboard writes there, so passing the entry would silently leave the
     module unconfigured.
 
-    Restores the call that stable-audio-tools makes on the lora-cj branch
-    (data/dataset.py, commit 894835ff "Custom prompt templates for demos").
-    Without it prompt_templates.py never sees prompt_config and falls back to
-    legacy tag prompts — or to empty strings when the clips carry no tags — so
-    everything configured in NEW FINETUNE is discarded.
+    underfit has always shipped prompt_templates.py but never called its
+    initialiser — this loader has had its own implementation since the first
+    commit, and stable-audio-tools' main makes no such call either. Without it
+    prompt_templates.py never sees prompt_config and falls back to legacy tag
+    prompts, or to empty strings when the clips carry no tags, so everything
+    configured in NEW FINETUNE is silently discarded.
 
     Note the config has to be set *before* the returned function is handed to
     the dataset: datasets that feed DataLoader workers dill-pickle it, snapshotting
