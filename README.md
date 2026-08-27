@@ -138,8 +138,8 @@ is removed from the loaders, and the dashboard still labels them correctly.
 Why: **DoRA-rows** sounds the best of the family, merges with other DoRAs more cleanly, and
 has optimisable speedups available at both training and inference time. The variants that
 normalise along columns are much harder to optimise at inference — in practice they run
-about **2× slower and use about 2× the memory** for no quality benefit. There's no reason to
-start a new run on one.
+about **2× slower and use about 2× the memory** for no quality benefit. We think there's no
+reason to start a new run on one, but if you can prove us wrong please show us.
 
 If you have a favourite checkpoint in a deprecated format, it will keep loading. Retrain in
 DoRA-rows when convenient.
