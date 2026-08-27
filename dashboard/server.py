@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 import time
@@ -3175,12 +3176,50 @@ def _place_spectrogram(src_audio, jpg_dest, spec_futs):
     spec_futs.append(_spec_pool.submit(generate_spectrogram, src_audio, jpg_dest))
 
 
-def _process_run_demos(run):
-    """Process demos for a single run: copy from source dir, generate spectrograms."""
+# run_id -> (demo dir mtime, entry count) as of the last completed sweep.
+# Re-globbing and re-stat'ing every clip of every run on every pass costs
+# ~215 s across 229 runs / ~90k clips here, nearly all of it re-confirming
+# long-finished work. A directory whose mtime and entry count are unchanged
+# cannot have gained or lost a demo, so the whole run can be skipped.
+_run_demo_fingerprints = {}
+
+
+def _demo_dir_fingerprint(demo_source, out_base):
+    """Cheap change detector for a run: (source mtime, cache mtime).
+
+    The source dir's mtime moves whenever a demo clip appears or disappears,
+    which is the only way a run gains work. The cache dir's mtime is included so
+    that clearing the processed output makes the watcher redo it rather than skip
+    it forever.
+
+    Two stats. An earlier version also counted directory entries, but scandir
+    over ~400 entries per run costs 18 s across 229 runs on this filesystem
+    versus 2 s for the stats, and catches nothing the mtimes miss.
+    """
+    try:
+        src_mtime = demo_source.stat().st_mtime_ns
+    except OSError:
+        return None
+    try:
+        out_mtime = out_base.stat().st_mtime_ns
+    except OSError:
+        out_mtime = 0
+    return (src_mtime, out_mtime)
+
+
+def _process_run_demos(run, force=False):
+    """Process demos for a single run: copy from source dir, generate spectrograms.
+
+    Skips entirely when the source dir looks untouched since the last sweep;
+    pass force=True to process regardless (used by the explicit REFRESH path).
+    """
     demo_source = Path(run.get("demo_source_dir", ""))
     if not demo_source.exists():
         return
     run_id = run["id"]
+    fp = _demo_dir_fingerprint(demo_source, AUDIO_DIR / "runs" / run_id)
+    if not force and fp is not None and _run_demo_fingerprints.get(run_id) == fp:
+        return
     run_mi = _get_model_info(run.get("base_model"))
     out_base = AUDIO_DIR / "runs" / run_id
     out_base.mkdir(parents=True, exist_ok=True)
@@ -3247,6 +3286,14 @@ def _process_run_demos(run):
     for f in spec_futs:
         f.result()
 
+    # Re-read rather than storing the pre-sweep value: this pass may have
+    # written into the cache dir, and storing the old mtime would make the next
+    # pass see a spurious change. Recorded only on success, so a pass that
+    # raised part-way is retried.
+    final_fp = _demo_dir_fingerprint(demo_source, AUDIO_DIR / "runs" / run_id)
+    if final_fp is not None:
+        _run_demo_fingerprints[run_id] = final_fp
+
 
 def process_all_demos():
     """Iterate over all registered runs, split demos into per-run dirs."""
@@ -3280,7 +3327,16 @@ def process_all_demos():
 
 def demo_watcher():
     while True:
-        process_all_demos()
+        try:
+            process_all_demos()
+        except Exception:
+            # One bad pass must not end the thread. It walks tens of thousands
+            # of files on a network filesystem, so a vanished file or a
+            # permissions blip is expected occasionally — and losing the watcher
+            # silently means demos simply stop appearing until a restart, with
+            # nothing to explain why.
+            print("[demo_watcher] pass failed; retrying next cycle:", flush=True)
+            traceback.print_exc()
         time.sleep(30)
 
 
@@ -3395,7 +3451,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             if (force or auto) and run:
                 DashboardHandler._demo_process_times[run_id] = time.time()
                 try:
-                    t = threading.Thread(target=_process_run_demos, args=(run,), daemon=True)
+                    # force=True on an explicit REFRESH: the point of the
+                    # button is to re-process, so the unchanged-dir skip in
+                    # _process_run_demos must not swallow it.
+                    t = threading.Thread(target=_process_run_demos, args=(run,),
+                                         kwargs={"force": force}, daemon=True)
                     t.start()
                     t.join(timeout=30)
                     if t.is_alive():
