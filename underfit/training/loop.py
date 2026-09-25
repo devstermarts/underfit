@@ -23,6 +23,7 @@ import torch
 from tqdm import tqdm
 
 from underfit.training.demo_step import run_demo_step
+from underfit.training.prompt_preview import print_prompt_preview
 from underfit.training.lora import apply_lora_from_config, load_lora_resume, save_lora_step
 from underfit.training.loss import compute_masked_loss, compute_normalized_mse
 from underfit.training.optim import create_optimizer_from_config, create_scheduler_from_config
@@ -388,6 +389,14 @@ def run_training(args, backend):
         pin_memory=_pin_memory,
         persistent_workers=_persistent,
     )
+
+    # Show what the conditioner will actually be fed, on every start and resume.
+    # Sampled through the dataset the loop is about to consume, so a broken
+    # prompt pipeline is visible here instead of only in the finished model.
+    try:
+        print_prompt_preview(train_dl, dataset_config, tokenizers=tokenizers)
+    except Exception as e:
+        print(f"[prompts] preview unavailable: {type(e).__name__}: {e}", flush=True)
 
     # --- Optimizer and scheduler ---
     optimizer_configs = training_config.get("optimizer_configs")

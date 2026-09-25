@@ -53,15 +53,58 @@ def _get_demo_latent_length(model, sample_size, latent_crop_length=None):
     return sample_size
 
 
+SPEC_SAMPLE_RATE = 32000   # what the dashboard's mel expects
+
+
+def _write_demo_spectrogram(audio_int16, stem, sample_rate):
+    """Draw the demo's spectrogram here, from audio already in memory.
+
+    The dashboard would otherwise re-open the mp3 and decode the whole clip
+    (~0.5 s for a 3-minute demo) purely to draw a 300x60 image — and that decode
+    is where libsndfile's non-thread-safe MPEG path bites when several run at
+    once. Writing the .jpg next to the .mp3 means the dashboard never decodes a
+    demo: its existence *is* the "already rendered" marker every call site
+    checks.
+
+    Best-effort by design: a failure here must never take down a training run,
+    and the dashboard still renders it later if the file is missing.
+    """
+    import torch
+    from underfit.spectrogram import render_to_jpg
+
+    jpg = f"{stem}.jpg"
+    if os.path.exists(jpg):
+        return
+    try:
+        y = audio_int16.to(torch.float32) / 32768.0
+        if sample_rate != SPEC_SAMPLE_RATE:
+            # Match the dashboard's resample exactly so trainer-rendered and
+            # dashboard-rendered images are indistinguishable.
+            if y.ndim == 1:
+                y = y.unsqueeze(0)
+            new_len = int(round(y.shape[-1] * SPEC_SAMPLE_RATE / sample_rate))
+            y = torch.nn.functional.interpolate(
+                y.unsqueeze(0), size=new_len, mode="linear",
+                align_corners=False).squeeze(0)
+        tmp = f".tmp_{os.path.basename(jpg)}"
+        render_to_jpg(y.numpy(), SPEC_SAMPLE_RATE, tmp)
+        os.replace(tmp, jpg)
+    except Exception as e:
+        tqdm.write(f"  spectrogram skipped for {stem}: {type(e).__name__}: {e}",
+                   file=sys.stdout)
+
+
 def _save_demo_file(audio_int16, demo_index, step, sample_rate, meta=None):
     """Save mp3 + JSON sidecar atomically (temp + rename) so the dashboard
-    never copies a half-written file."""
+    never copies a half-written file. Also renders the spectrogram, so the
+    dashboard never has to decode this clip."""
     import torchaudio  # lazy: see module-level note
-    final_mp3 = f"demo_{demo_index}_{step:08d}.mp3"
+    stem = f"demo_{demo_index}_{step:08d}"
+    final_mp3 = f"{stem}.mp3"
     if os.path.exists(final_mp3):
         return
-    tmp_wav = f".tmp_demo_{demo_index}_{step:08d}.wav"
-    tmp_mp3 = f".tmp_demo_{demo_index}_{step:08d}.mp3"
+    tmp_wav = f".tmp_{stem}.wav"
+    tmp_mp3 = f".tmp_{stem}.mp3"
     torchaudio.save(tmp_wav, audio_int16, sample_rate)
     subprocess.run(
         ["ffmpeg", "-i", tmp_wav, "-q:a", "0", "-y", tmp_mp3, "-loglevel", "error"],
@@ -70,8 +113,9 @@ def _save_demo_file(audio_int16, demo_index, step, sample_rate, meta=None):
     os.rename(tmp_mp3, final_mp3)
     os.remove(tmp_wav)
     if meta is not None:
-        with open(f"demo_{demo_index}_{step:08d}.json", "w") as f:
+        with open(f"{stem}.json", "w") as f:
             json.dump(meta, f)
+    _write_demo_spectrogram(audio_int16, stem, sample_rate)
 
 
 def _build_inpaint_zeros(model, demo_samples, device, dtype):

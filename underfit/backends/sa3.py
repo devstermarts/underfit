@@ -280,7 +280,8 @@ def create_dataloader(dataset_config, batch_size, sample_size, sample_rate,
     if dataset_type == "pre_encoded":
         configs = []
         for ds in dataset_config["datasets"]:
-            cmf = _load_custom_metadata_fn(ds.get("custom_metadata_module"))
+            cmf = _load_custom_metadata_fn(
+                ds.get("custom_metadata_module"), dataset_config)
             configs.append(LatentDatasetConfig(
                 id=ds["id"],
                 path=_resolve_app_relative_path(ds["path"]),
@@ -301,7 +302,8 @@ def create_dataloader(dataset_config, batch_size, sample_size, sample_rate,
         force_channels = "mono" if audio_channels == 1 else "stereo"
         configs = []
         for ds in dataset_config["datasets"]:
-            cmf = _load_custom_metadata_fn(ds.get("custom_metadata_module"))
+            cmf = _load_custom_metadata_fn(
+                ds.get("custom_metadata_module"), dataset_config)
             configs.append(LocalDatasetConfig(
                 id=ds["id"],
                 path=_resolve_app_relative_path(ds["path"]),
@@ -373,14 +375,66 @@ def create_dataloader(dataset_config, batch_size, sample_size, sample_rate,
     )
 
 
-def _load_custom_metadata_fn(module_path):
+# Where metadata helper modules live now. `pre/` was the previous name for this
+# directory; per-run dataset configs store an absolute path to the module, so
+# every run created before the rename points at a file that no longer exists.
+_METADATA_MODULE_DIRS = ("dataset_processing", "pre")
+
+
+def _resolve_metadata_module(module_path):
+    """Find a custom_metadata_module whose recorded path has moved.
+
+    Dataset configs are provenance records with absolute paths in them, so
+    renaming the directory strands every older run:
+
+        FileNotFoundError: .../pre/prompt_templates.py
+
+    Rather than migrating everyone's per-run configs, look for the same filename
+    in the directories these modules live in. Only consulted when the recorded
+    path is missing, so a config deliberately pointing somewhere else is left
+    alone, and an unsalvageable path still fails with its original message.
+    """
+    if not module_path or os.path.isfile(module_path):
+        return module_path
+    repo_root = Path(__file__).resolve().parents[2]
+    name = os.path.basename(module_path)
+    for d in _METADATA_MODULE_DIRS:
+        cand = repo_root / d / name
+        if cand.is_file():
+            print(f"[dataset] metadata module moved: {module_path} -> {cand}", flush=True)
+            return str(cand)
+    return module_path
+
+
+def _load_custom_metadata_fn(module_path, dataset_config=None):
+    """Load a custom_metadata_module and hand it the dataset config.
+
+    `dataset_config` must be the *whole* config, not the per-dataset entry:
+    prompt_templates.set_config() reads the top-level "prompt_config" that the
+    dashboard writes there, so passing the entry would silently leave the
+    module unconfigured.
+
+    underfit has always shipped prompt_templates.py but never called its
+    initialiser — this loader has had its own implementation since the first
+    commit, and stable-audio-tools' main makes no such call either. Without it
+    prompt_templates.py never sees prompt_config and falls back to legacy tag
+    prompts, or to empty strings when the clips carry no tags, so everything
+    configured in NEW FINETUNE is silently discarded.
+
+    Note the config has to be set *before* the returned function is handed to
+    the dataset: datasets that feed DataLoader workers dill-pickle it, snapshotting
+    the module globals at that moment. Setting it afterwards would leave the
+    workers with an unconfigured copy.
+    """
     if module_path is None:
         return None
-    module_path = _resolve_app_relative_path(module_path)
+    module_path = _resolve_metadata_module(_resolve_app_relative_path(module_path))
     import importlib.util
     spec = importlib.util.spec_from_file_location("metadata_module", module_path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    if dataset_config is not None and hasattr(mod, "set_config"):
+        mod.set_config(dataset_config)
     return mod.get_custom_metadata
 
 

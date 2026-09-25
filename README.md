@@ -119,16 +119,30 @@ Jankier than running locally, but still works. Read more here: https://github.co
 
 ## Adapter formats
 
-> Throughout this README **LoRA** is used as a catch-all term for the whole adapter family — DoRA, BoRA, the -XS variants, and original LoRA included. 
+> Throughout this README **LoRA** is used as a catch-all term for the whole adapter family — DoRA, the -XS variants, and original LoRA included. 
 
 | Format        | What it adds | When |
 |---            |---|---|
 | **LoRA**      | `lora_A`, `lora_B` | The original low-rank adapter. Inferior, but well-understood. |
-| **DoRA**      | LoRA + a per-column magnitude vector | **Recommended default.** Generally better-quality fits than vanilla LoRA. |
-| **BoRA**      | LoRA + per-row *and* per-column magnitudes | Like DoRA but scales in both dimensions. |
-| **LoRA-XS / DoRA-XS / BoRA-XS** | Same as above, but the rank-`r` matrices are factored against fixed SVD bases instead of being free parameters | "Extra-small" variants. Smaller files, slightly less capacity. |
+| **DoRA-rows** | LoRA + a per-row magnitude vector | **Recommended default.** Best quality of the family, and the easiest to make fast. |
+| **LoRA-XS / DoRA-rows-XS** | Same as above, but the rank-`r` matrices are factored against fixed SVD bases instead of being free parameters | "Extra-small" variants. Smaller files, slightly less capacity. |
 
 Pick one in the **LoRA type** dropdown of *New Finetune*. All variants produce a single `.safetensors` file you can load anywhere.
+
+### Deprecated: the column-normalised variants
+
+**DoRA-cols, BoRA, DoRA-cols-XS and BoRA-XS are deprecated** and no longer offered in the
+*New Finetune* dropdown. Existing runs and checkpoints that use them keep working — nothing
+is removed from the loaders, and the dashboard still labels them correctly.
+
+Why: **DoRA-rows** sounds the best of the family, merges with other DoRAs more cleanly, and
+has optimisable speedups available at both training and inference time. The variants that
+normalise along columns are much harder to optimise at inference — in practice they run
+about **2× slower and use about 2× the memory** for no quality benefit. We think there's no
+reason to start a new run on one, but if you can prove us wrong please show us.
+
+If you have a favourite checkpoint in a deprecated format, it will keep loading. Retrain in
+DoRA-rows when convenient.
 
 ---
 
@@ -197,7 +211,7 @@ In the dashboard click **+ Finetune**.
 | **Name** | `my-first-lora` (alphanumeric + hyphens) | Run ID + `.safetensors` filename |
 | **Model** | `sa3-medium` | Base model to finetune against |
 | **Dataset** | the one you created in Step 3 | Pre-encoded latents |
-| **LoRA type** | **`DoRA`** | Recommended. |
+| **LoRA type** | **`DoRA-rows`** | Recommended. The column-normalised variants are deprecated — see [Adapter formats](#adapter-formats). |
 | **LoRA rank** | `16` | Capacity. Higher = more parameters + sometimes higher quality + more overfitting risk. Smaller = sometimes learns style better. |
 | **Steps** | `20000` | A reasonable LoRA lands around 10k — that's where it *creatively underfits*: still varied on new prompts, not yet memorising. Past 20k it may overfit. |
 | **Batch size** | `1` on T4, up to `8` on H100 | Bigger = uses more VRAM. |

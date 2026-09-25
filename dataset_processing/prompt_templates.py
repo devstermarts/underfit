@@ -71,7 +71,13 @@ def _build_tag_prompt(metadata, pc):
 # ── Path-based prompts ───────────────────────────────────────────────
 
 def _build_path_prompt(metadata, pc):
-    relpath = _get(metadata, "relpath")
+    # Prefer the source audio path. For pre-encoded datasets `relpath` is the
+    # .npy latent filename, so a path prompt would read
+    # "<album>/<track>.npy" — the latent bookkeeping
+    # leaking into the training text. The sidecar also records `src_relpath`,
+    # the audio the latents were encoded from, which is what "use the file
+    # path" means. audio_dir datasets have no src_relpath, hence the fallback.
+    relpath = _get(metadata, "src_relpath") or _get(metadata, "relpath")
     if not relpath:
         return ""
 
